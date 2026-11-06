@@ -34,6 +34,9 @@ import {
 import type { ContractTransactionResponse, InterfaceAbi } from "ethers";
 import { AgentVoucherSigner, GoferPolicyEngine } from "../src/index.js";
 import type { PaythosNetwork } from "../src/types.js";
+import { loadDotEnv } from "../src/config/env.js";
+
+loadDotEnv(); // sdk/typescript/.env when present; real env vars still win
 
 interface VaultLike {
   deploymentTransaction(): ContractTransactionResponse | null;
@@ -86,11 +89,50 @@ function usd(str: string): bigint {
   return parseUnits(str, 6);
 }
 
+// docs.arc.io/arc/references/rpc-endpoints — public Arc testnet providers.
+// ARC_RPC_URL (env/.env) is tried first when set; mirrors auto-failover.
+const RPC_CANDIDATES = [
+  process.env.ARC_RPC_URL?.trim() || "https://rpc.testnet.arc.io",
+  "https://rpc.testnet.arc.io",
+  "https://rpc.drpc.testnet.arc.io",
+  "https://rpc.quicknode.testnet.arc.io",
+];
+
+async function pickRpc(): Promise<string> {
+  const tried = new Set<string>();
+  for (const url of RPC_CANDIDATES) {
+    if (tried.has(url)) continue;
+    tried.add(url);
+    const probe = new JsonRpcProvider(url, undefined, {
+      staticNetwork: true,
+      batchMaxCount: 1,
+    });
+    try {
+      const deadline = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 15_000),
+      );
+      const network = await Promise.race([probe.getNetwork(), deadline]);
+      if (Number(network.chainId) !== ARC_TESTNET_CHAIN_ID) continue;
+      console.log("  rpc             :", url);
+      return url;
+    } catch {
+      continue;
+    }
+  }
+  console.error("FAIL CLOSED: every Arc Testnet RPC endpoint timed out or mismatched chainId.");
+  console.error("Tried:", [...tried].join("  "));
+  process.exit(2);
+}
+
 async function main(): Promise<void> {
-  const rpcUrl = process.env.ARC_RPC_URL ?? "https://rpc.testnet.arc.io";
+  console.log("Arc Testnet E2E — Paythos Protocol");
+  const rpcUrl = await pickRpc();
   const deployerKey = envOrExit("PAYTHOS_DEPLOYER_KEY");
   const treasury = getAddress(envOrExit("PAYTHOS_TREASURY_ADDRESS"));
-  const ephemeralKey = envOrExit("PAYTHOS_EPHEMERAL_KEY");
+  // The ephemeral agent key is disposable by design: auto-generate when absent.
+  // Its derived address is logged; the key itself is never printed (rule 5).
+  const ephemeralKey =
+    process.env.PAYTHOS_EPHEMERAL_KEY?.trim() || Wallet.createRandom().privateKey;
   const depositUsd = usd(process.env.PAYTHOS_DEPOSIT_USD ?? "0.50");
   const claimUsd = usd(process.env.PAYTHOS_CLAIM_USD ?? "0.10");
 
@@ -111,7 +153,6 @@ async function main(): Promise<void> {
     ? getAddress(process.env.PAYTHOS_MERCHANT_ADDRESS)
     : deployer.address;
 
-  console.log("Arc Testnet E2E — Paythos Protocol");
   console.log("  deployer (owner):", deployer.address);
   console.log("  treasury        :", treasury);
   console.log("  merchant        :", merchant);
@@ -149,6 +190,7 @@ async function main(): Promise<void> {
     domain: { network: NETWORK, vaultAddress },
   });
   const agentKey = agentSigner.agentKey;
+  console.log("  agent (derived) :", agentKey);
   const now = Math.floor(Date.now() / 1000);
   const policy = {
     dailyLimit: usd("5"),

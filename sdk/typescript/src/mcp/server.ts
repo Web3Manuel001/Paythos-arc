@@ -16,6 +16,9 @@ import {
 import { AgentVoucherSigner } from "../signer/voucherSigner.js";
 import { PaythosClient, AlwaysApprove, DEFAULT_ALLOWANCE_MICRO } from "../client/paythosClient.js";
 import { PaythosError } from "../core/errors.js";
+import { loadDotEnv } from "../config/env.js";
+
+loadDotEnv(); // sdk/typescript/.env when present; exported env vars still win
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
