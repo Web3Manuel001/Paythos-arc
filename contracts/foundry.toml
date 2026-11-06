@@ -1,0 +1,39 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 2_000
+via_ir = true
+fs_permissions = [{ access = "read", path = "./" }]
+
+# Verified against https://docs.arc.io/arc/references/rpc-endpoints
+[rpc_endpoints]
+arc_testnet = "https://rpc.testnet.arc.io"
+arc_mainnet = "https://rpc.mainnet.arc.io"
+
+[profile.default.fuzz]
+runs = 512
+max_test_rejects = 262_144
+
+[profile.default.invariant]
+runs = 128
+depth = 16
+fail_on_revert = false
+dictionary_weight = 20
+
+# Gate 1 requirement: each invariant must survive >= 10_000 runs in CI
+[profile.invariant-fuzz]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.28"
+optimizer = true
+optimizer_runs = 2_000
+fuzz = { runs = 10_000, max_test_rejects = 1_000_000 }
+invariant = { runs = 10_000, depth = 16, fail_on_revert = false, call_override = false, dictionary_weight = 20 }
+
+[profile.ci]
+fuzz = { runs = 2_000 }
+invariant = { runs = 256, depth = 32 }

@@ -1,0 +1,278 @@
+/**
+ * Paythos MCP server (docs/ARCHITECTURE.md Module 4.3) — stdio JSON-RPC 2.0.
+ * Any MCP-capable agent host (Claude Desktop, Cursor, …) mounts budgeted
+ * errands through these four tools. Zero network egress beyond the tools.
+ *
+ * Run: npx tsx src/mcp/server.ts   (or compiled dist/mcp/server.js)
+ * Env: PAYTHOS_EPHEMERAL_KEY, PAYTHOS_VAULT_ADDRESS (AGENTS.md secrets rule 5).
+ */
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+import {
+  CHAIN_REGISTRY,
+  PaymentChallenge,
+  formatMicroUsd,
+} from "../types.js";
+import { AgentVoucherSigner } from "../signer/voucherSigner.js";
+import { PaythosClient, AlwaysApprove, DEFAULT_ALLOWANCE_MICRO } from "../client/paythosClient.js";
+import { PaythosError } from "../core/errors.js";
+
+interface JsonRpcRequest {
+  jsonrpc: "2.0";
+  id?: number | string | null;
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+interface McpTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+const TOOLS: McpTool[] = [
+  {
+    name: "get_agent_budget",
+    description:
+      "Report the ephemeral agent's remaining rolling allowance, signer ledger state, and GOFER tier thresholds. No side effects.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "dry_run_errand",
+    description:
+      "Pre-execution financial simulation (Module 4.1): evaluate a x402 challenge through GOFER without moving capital. Always run this before settle_invoice.",
+    inputSchema: {
+      type: "object",
+      required: ["challenge"],
+      properties: {
+        challenge: {
+          type: "object",
+          description: "Decoded x402 v2 PAYMENT-REQUIRED challenge (x402Version=2, payTo, max, scheme).",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "settle_invoice",
+    description:
+      "Sign and record a cumulative EIP-712 voucher for a challenged resource. Runs the full GOFER gate first; Tier-2 spends deny without a human gate provider.",
+    inputSchema: {
+      type: "object",
+      required: ["challenge"],
+      properties: {
+        challenge: { type: "object", description: "x402 v2 PAYMENT-REQUIRED challenge." },
+        prompt: { type: "string", description: "Verifiable-intent prompt text; only its keccak hash leaves the boundary." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "query_x402_resource",
+    description:
+      "Fetch a x402-gated URL end-to-end: GET → 402 → GOFER gate → voucher → retry. Returns the response text plus the signed voucher for audit.",
+    inputSchema: {
+      type: "object",
+      required: ["url"],
+      properties: {
+        url: { type: "string", description: "https:// resource URL" },
+        prompt: { type: "string", description: "Verifiable-intent prompt text" },
+      },
+      additionalProperties: false,
+    },
+  },
+];
+
+/* ---------------- server construction (fail-closed env) ---------------- */
+
+function envOrDie(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    // No stdout pollution — the MCP channel IS stdout. Fail to stderr and exit.
+    process.stderr.write(`paythos-mcp: ${name} is not set (secrets come from env, AGENTS.md rule 5)\n`);
+    process.exit(2);
+  }
+  return value;
+}
+
+const EPHEMERAL_KEY = envOrDie("PAYTHOS_EPHEMERAL_KEY");
+const VAULT_ADDRESS = envOrDie("PAYTHOS_VAULT_ADDRESS");
+const NETWORK = (process.env.PAYTHOS_NETWORK ?? "eip155:5042002") as keyof typeof CHAIN_REGISTRY;
+const ALLOWLIST = new Set<string>(
+  (process.env.PAYTHOS_MERCHANTS ? process.env.PAYTHOS_MERCHANTS.split(",") : [])
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+const signer = new AgentVoucherSigner({
+  privateKey: EPHEMERAL_KEY,
+  domain: { network: NETWORK, vaultAddress: VAULT_ADDRESS },
+});
+
+const client = new PaythosClient(signer, {
+  signer,
+  network: NETWORK,
+  allowlist: ALLOWLIST,
+  transactability: AlwaysApprove, // real oracle lands Gate 3
+  allowanceMicro: DEFAULT_ALLOWANCE_MICRO,
+});
+
+/* ---------------- tool dispatch ---------------- */
+
+function toolResult(id: JsonRpcRequest["id"], payload: unknown): string {
+  return JSON.stringify({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] } }) + "\n";
+}
+
+function toolError(id: JsonRpcRequest["id"], code: number, message: string): string {
+  return JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\n";
+}
+
+function dispatch(req: JsonRpcRequest): string {
+  const id = req.id ?? null;
+  const params = req.params ?? {};
+
+  switch (req.method) {
+    case "initialize":
+      return toolResult(id, {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "paythos-mcp", version: "0.1.0" },
+      });
+
+    case "tools/list":
+      return toolResult(id, { tools: TOOLS });
+
+    case "tools/call": {
+      const name = params["name"] as string | undefined;
+      const args = (params["arguments"] as Record<string, unknown> | undefined) ?? {};
+      let result: unknown;
+      try {
+        result = callTool(name, args);
+      } catch (err) {
+        if (err instanceof PaythosError) {
+          return toolResult(id, { error: { code: err.code, message: err.message } });
+        }
+        return toolError(id, -32603, `internal error: ${String(err)}`);
+      }
+      if (result instanceof Promise) {
+        result.then(
+          (payload) => {
+            process.stdout.write(toolResult(id, payload));
+            persistLedger();
+          },
+          (err) => {
+            const message = err instanceof PaythosError ? `${err.code}: ${err.message}` : String(err);
+            process.stdout.write(toolError(id, -32603, message));
+          },
+        );
+        return ""; // async tools answer on the resolved branch
+      }
+      return toolResult(id, result);
+    }
+
+    case "ping":
+      return toolResult(id, {});
+
+    default:
+      return toolError(id, -32601, `method not found: ${req.method}`);
+  }
+}
+
+async function callTool(name: string | undefined, args: Record<string, unknown>): Promise<unknown> {
+  switch (name) {
+    case "get_agent_budget": {
+      const ledger = signer.ledgerSnapshot().map((e) => [e.merchant, formatMicroUsd(e.cumulativeAmount)]);
+      return {
+        agentKey: signer.agentKey,
+        network: NETWORK,
+        vaultAddress: VAULT_ADDRESS,
+        chainedVerified: CHAIN_REGISTRY[NETWORK].verified,
+        remainingAllowanceMicro: formatMicroUsd(DEFAULT_ALLOWANCE_MICRO),
+        ledger,
+        tiers: {
+          microAutoExecUsd: "$1.00",
+          humanApprovalUpperUsd: "$10.00",
+          hardCeilingUsd: "$25.00",
+        },
+        spendLedgerCount: ledger.length,
+      };
+    }
+
+    case "dry_run_errand": {
+      const challenge = args["challenge"] as PaymentChallenge;
+      const report = client.dryRun(challenge);
+      return { ...report, reason: report.reason, tier: report.tier };
+    }
+
+    case "settle_invoice": {
+      const challenge = args["challenge"] as PaymentChallenge;
+      const prompt = (args["prompt"] as string | undefined) ?? "mcp settle_invoice";
+      const gate = client.gate(challenge, prompt);
+      if (!gate.ok) return { error: gate.error };
+      if ("needsHuman" in gate && gate.needsHuman) {
+        return { error: { code: "human_approval_required", detail: gate.reason } };
+      }
+      const signed = await signer.recordAndSign(challenge.payTo, gate.amountMicro, gate.memo);
+      if (!signed.ok) return { error: signed.error };
+      return {
+        voucher: {
+          ...signed.voucher,
+          cumulativeAmount: signed.voucher.cumulativeAmount.toString(),
+          validUntil: signed.voucher.validUntil.toString(),
+        },
+        signature: signed.signature,
+        headers: signed.headers,
+      };
+    }
+
+    case "query_x402_resource": {
+      const url = args["url"] as string;
+      if (typeof url !== "string" || !/^https:\/\//.test(url)) {
+        throw new PaythosError("invalid_challenge", "url must be an https URL");
+      }
+      return client.fetchWithX402({ url, prompt: (args["prompt"] as string)?.slice(0, 512) ?? url }).then(async (res) => {
+        if (!res.ok) return { error: res.error };
+        return {
+          status: res.data.status,
+          body: (await res.data.text()).slice(0, 4096),
+          voucher: res.voucher
+            ? { ...res.voucher, cumulativeAmount: res.voucher.cumulativeAmount.toString(), validUntil: res.voucher.validUntil.toString() }
+            : null,
+        };
+      });
+    }
+
+    default:
+      throw new PaythosError("invalid_challenge", `unknown tool: ${name}`);
+  }
+}
+
+/* ---------------- stdio JSON-RPC loop ---------------- */
+
+const stateFile = process.env.PAYTHOS_MCP_LEDGER;
+function persistLedger(): void {
+  if (!stateFile) return;
+  writeFileSync(stateFile, JSON.stringify(signer.ledgerSnapshot()), "utf8");
+}
+
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let req: JsonRpcRequest;
+  try {
+    req = JSON.parse(trimmed) as JsonRpcRequest;
+  } catch {
+    process.stdout.write(toolError(null, -32700, "parse error") );
+    return;
+  }
+  const response = dispatch(req);
+  process.stdout.write(response);
+  persistLedger();
+});
+
+// Keep the async tool promises unhandled-safe: MCP stdio is synchronous per line;
+// query_x402_resource resolves via promise chaining inside dispatch (fire-and-forget would break ordering),
+// so force async tools to be handled:
+rl.on("close", () => persistLedger());
+process.on("SIGINT", () => { persistLedger(); process.exit(0); });

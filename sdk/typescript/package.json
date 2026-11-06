@@ -1,0 +1,46 @@
+{
+  "name": "@paythos/sdk",
+  "version": "0.1.0",
+  "description": "Paythos Protocol TypeScript SDK: EIP-712 voucher signer, x402 v2 client, merchant middleware, MCP server, framework adapters (LangChain / ElizaOS / AutoGen).",
+  "type": "module",
+  "license": "GPL-3.0",
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "mcp": "tsx src/mcp/server.ts",
+    "e2e:arc": "tsx scripts/arc-e2e.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.4",
+    "zod": "^3.23.8"
+  },
+  "peerDependencies": {
+    "@langchain/core": ">=0.2",
+    "express": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "express": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.0.0",
+    "express": "^5.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.9"
+  }
+}
