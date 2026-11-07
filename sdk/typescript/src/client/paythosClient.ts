@@ -45,9 +45,15 @@ export interface PaythosClientOptions {
   fetch?: typeof fetch;
   /**
    * Full remaining rolling allowance override; DEFAULT_ALLOWANCE_MICRO when
-   * omitted — replaced by real vault telemetry in Gate 2.5.
+   * omitted. Prefer `allowanceProvider` (below) for live vault telemetry.
    */
   allowanceMicro?: bigint;
+  /**
+   * Live on-chain telemetry hook (Gate 2.5): must resolve to the vault's
+   * `remainingAllowance(agentKey)`. Sampled before each gated request.
+   * Example: () => vaultReader.remainingAllowance(signer.address)
+   */
+  allowanceProvider?: () => Promise<bigint>;
 }
 
 export interface HumanApprovalSummary {
@@ -79,6 +85,7 @@ export interface RequestAttempt {
 export class PaythosClient {
   readonly #gofer: GoferPolicyEngine;
   readonly #bucket: TokenBucket;
+  #allowanceMicro: bigint;
 
   constructor(
     protected readonly signer: AgentVoucherSigner,
@@ -86,6 +93,22 @@ export class PaythosClient {
   ) {
     this.#gofer = new GoferPolicyEngine(options.tiers);
     this.#bucket = new TokenBucket(options.rateLimit ?? { capacity: 100, refillPerSecond: 10 });
+    this.#allowanceMicro = options.allowanceMicro ?? DEFAULT_ALLOWANCE_MICRO;
+  }
+
+  /**
+   * Refresh the in-memory allowance from the on-chain provider (Gate 2.5).
+   * No-op (resolve) without an `allowanceProvider`; failures are swallowed so
+   * telemetry outages never block the gate — the stale local value holds.
+   */
+  async refreshAllowance(): Promise<void> {
+    const provider = this.options.allowanceProvider;
+    if (!provider) return;
+    try {
+      this.#allowanceMicro = await provider();
+    } catch {
+      /* keep last-known allowance — telemetry failure is not a spend error */
+    }
   }
 
   /** dryRun(): structured pre-flight on a challenge, capital untouched (Module 4.1). */
@@ -109,6 +132,7 @@ export class PaythosClient {
     }
 
     const challenge = decodeChallenge(first);
+    await this.refreshAllowance();
     const gate = this.gate(challenge, attempt.prompt ?? attempt.url);
     if (!gate.ok) return { ok: false, error: gate.error };
 
@@ -164,7 +188,7 @@ export class PaythosClient {
   protected contextFor(challenge: PaymentChallenge) {
     return {
       amountMicro: parseMaxMicro(challenge),
-      remainingAllowanceMicro: this.options.allowanceMicro ?? DEFAULT_ALLOWANCE_MICRO,
+      remainingAllowanceMicro: this.#allowanceMicro,
       merchant: challenge.payTo,
       allowlist: this.options.allowlist,
       counterpartyApproved: this.transactabilityApprove(challenge.payTo),

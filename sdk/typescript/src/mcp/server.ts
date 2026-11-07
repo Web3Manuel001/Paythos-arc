@@ -16,6 +16,8 @@ import {
 import { AgentVoucherSigner } from "../signer/voucherSigner.js";
 import { PaythosClient, AlwaysApprove, DEFAULT_ALLOWANCE_MICRO } from "../client/paythosClient.js";
 import { PaythosError } from "../core/errors.js";
+import { VaultReader, vaultReaderFor } from "../core/vaultReader.js";
+import { JsonRpcProvider } from "ethers";
 import { loadDotEnv } from "../config/env.js";
 
 loadDotEnv(); // sdk/typescript/.env when present; exported env vars still win
@@ -112,12 +114,26 @@ const signer = new AgentVoucherSigner({
   domain: { network: NETWORK, vaultAddress: VAULT_ADDRESS },
 });
 
+/**
+ * Optional on-chain telemetry (Gate 2.5): set PAYTHOS_RPC_URL + the vault
+ * default and `get_agent_budget` reports REAL vault state; absent env keeps
+ * the offline spec-default (never blocks tool startup).
+ */
+const RPC_URL = process.env.PAYTHOS_RPC_URL?.trim() || undefined;
+let vaultReader: VaultReader | undefined;
+async function onChainAllowanceMicro(): Promise<bigint> {
+  if (!RPC_URL) return DEFAULT_ALLOWANCE_MICRO;
+  vaultReader ??= vaultReaderFor(new JsonRpcProvider(RPC_URL, undefined, { staticNetwork: true }), VAULT_ADDRESS);
+  return vaultReader.remainingAllowance(signer.agentKey);
+}
+
 const client = new PaythosClient(signer, {
   signer,
   network: NETWORK,
   allowlist: ALLOWLIST,
   transactability: AlwaysApprove, // real oracle lands Gate 3
   allowanceMicro: DEFAULT_ALLOWANCE_MICRO,
+  ...(RPC_URL ? { allowanceProvider: onChainAllowanceMicro } : {}),
 });
 
 /* ---------------- tool dispatch ---------------- */
@@ -184,13 +200,22 @@ function dispatch(req: JsonRpcRequest): string {
 async function callTool(name: string | undefined, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "get_agent_budget": {
+      let real: Awaited<ReturnType<typeof onChainAllowanceMicro>> | undefined;
+      if (RPC_URL) {
+        try {
+          real = await onChainAllowanceMicro();
+        } catch {
+          real = undefined; // telemetry outage → spec default, tool still answers
+        }
+      }
       const ledger = signer.ledgerSnapshot().map((e) => [e.merchant, formatMicroUsd(e.cumulativeAmount)]);
       return {
         agentKey: signer.agentKey,
         network: NETWORK,
         vaultAddress: VAULT_ADDRESS,
         chainedVerified: CHAIN_REGISTRY[NETWORK].verified,
-        remainingAllowanceMicro: formatMicroUsd(DEFAULT_ALLOWANCE_MICRO),
+        remainingAllowanceMicro: formatMicroUsd(real ?? DEFAULT_ALLOWANCE_MICRO),
+        allowanceSource: real !== undefined ? "on_chain" : "spec_default",
         ledger,
         tiers: {
           microAutoExecUsd: "$1.00",

@@ -36,6 +36,8 @@ export interface FlushPlan {
   agentKey: string;
   merchant: string;
   voucher: Voucher; // the HIGHEST unclaimed voucher (INV-M2)
+  /** EIP-712 signature for exactly this voucher — required by claimVoucher. */
+  signature: string;
 }
 
 export interface VerifyOutcome {
@@ -47,9 +49,16 @@ export interface VerifyOutcome {
   unsettledMicro: bigint;
 }
 
+interface VoucherRecord {
+  voucher: Voucher;
+  signature: string;
+}
+
 export class VoucherAccumulator {
   /** merchant-side session ledger: agentKey => highest voucher (INV-M2). */
-  readonly #highest = new Map<string, Voucher>();
+  readonly #highest = new Map<string, VoucherRecord>();
+  /** Settled cumulative per agent — the daemon reports it post-confirmation. */
+  readonly #settled = new Map<string, bigint>();
   #domain: TypedDataDomain;
 
   constructor(protected readonly cfg: MerchantVerifierConfig) {
@@ -104,23 +113,26 @@ export class VoucherAccumulator {
       return fail(402, "signature was NOT signed by voucher.agentKey (INV bound)");
     }
 
-    const current = this.#highest.get(recovered);
+    const current = this.#highest.get(recovered)?.voucher;
     if (current && voucher.cumulativeAmount <= current.cumulativeAmount) {
       // INV-1 on the merchant side too: reject stale/identical replays.
       return fail(402, "stale voucher: cumulative amount not strictly increasing");
     }
     // INV-M4 credit wall: halt the stream until a flush confirms settlement.
+    // Measured as UNSETTLED exposure (cumulative − confirmed on-chain).
     const tolerance = this.cfg.creditToleranceMicro ?? 2_000_000n;
-    if (voucher.cumulativeAmount > tolerance) {
+    const settled = this.#settled.get(recovered) ?? 0n;
+    const unsettledCandidate = voucher.cumulativeAmount > settled ? voucher.cumulativeAmount - settled : 0n;
+    if (unsettledCandidate > tolerance) {
       return {
         ok: false,
         status: 402,
         reason: "credit tolerance exceeded — flush required (INV-M4)",
-        unsettledMicro: current?.cumulativeAmount ?? 0n,
+        unsettledMicro: this.unsettledFor(recovered),
       };
     }
-    this.#highest.set(recovered, voucher);
-    const unsettled = this.unsettledMicro(voucher);
+    this.#highest.set(recovered, { voucher, signature: sig });
+    const unsettled = this.unsettledFor(recovered);
 
     // The 402→200 path also ANCHORS the flush trigger (INV-M2/M3).
     const flushed = this.maybeFlush(recovered);
@@ -134,9 +146,27 @@ export class VoucherAccumulator {
     };
   }
 
-  /** Granular unsettle ledger balance across all vouchers for the agent. */
+  /** Granular unsettle exposure for one voucher: cumulative − confirmed settled. */
   unsettledMicro(voucher: Voucher): bigint {
-    return voucher.cumulativeAmount;
+    const settled = this.#settled.get(voucher.agentKey.toLowerCase()) ?? 0n;
+    return voucher.cumulativeAmount > settled ? voucher.cumulativeAmount - settled : 0n;
+  }
+
+  /** Current unsettled exposure for an agent across the whole session. */
+  unsettledFor(agentKey: string): bigint {
+    const record = this.#highest.get(agentKey.toLowerCase());
+    if (!record) return 0n;
+    return this.unsettledMicro(record.voucher);
+  }
+
+  /**
+   * Record an on-chain settlement (INV-M3). Called by the flush daemon after
+   * confirmation; resets the credit wall so the session can continue.
+   */
+  markSettled(agentKey: string, cumulativeSettled: bigint): void {
+    const key = agentKey.toLowerCase();
+    const current = this.#settled.get(key) ?? 0n;
+    if (cumulativeSettled > current) this.#settled.set(key, cumulativeSettled);
   }
 
   /**
@@ -147,22 +177,28 @@ export class VoucherAccumulator {
    * Returns whether a flush was queued. Never throws.
    */
   maybeFlush(agentKey: string): boolean {
-    const voucher = this.#highest.get(agentKey);
+    const record = this.#highest.get(agentKey);
     const flushThresholdMicro = this.cfg.flushThresholdMicro ?? 5_000_000n;
-    if (voucher === undefined) return false;
-    if (voucher.cumulativeAmount < flushThresholdMicro) return false;
+    if (record === undefined) return false;
+    if (this.unsettledFor(agentKey) < flushThresholdMicro) return false;
     if (!this.cfg.onFlushReady) return false;
     void this.cfg.onFlushReady({
       agentKey,
-      merchant: voucher.merchant,
-      voucher,
+      merchant: record.voucher.merchant,
+      voucher: record.voucher,
+      signature: record.signature,
     });
     return true;
   }
 
   /** Gets the highest current voucher for the agent (daemon/test visibility). */
   highest(agentKey: string): Voucher | undefined {
-    return this.#highest.get(agentKey.toLowerCase());
+    return this.#highest.get(agentKey.toLowerCase())?.voucher;
+  }
+
+  /** The signature bound to the currently-highest voucher (daemon visibility). */
+  highestSignature(agentKey: string): string | undefined {
+    return this.#highest.get(agentKey.toLowerCase())?.signature;
   }
 }
 

@@ -17,7 +17,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "mcp": "tsx src/mcp/server.ts",
-    "e2e:arc": "tsx scripts/arc-e2e.ts"
+    "e2e:arc": "tsx scripts/arc-e2e.ts",
+    "flushd": "tsx scripts/flushd.ts"
   },
   "dependencies": {
     "ethers": "^6.13.4",
