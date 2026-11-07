@@ -38,6 +38,12 @@ treasury address; deployment scripts fail closed if it is missing or zero-addres
 Reference prior deployment (historical, not to be migrated): Arc Testnet vault
 `0xa9d5525BE440831c64695d30c915DF303E0151EF`, explorer `testnet.arcscan.app`.
 
+**Current live build deployment** (Gate 2 E2E, 2026-11-07): Arc Testnet vault
+`0x5E7Ffad3da280533C8Abf886fB2DaE225EE00c4C` (deploy tx `0x72e9fec9d03c6699a2b520fc0e9935c79eb04155d9d096c33b7891ed71e96406`),
+owner/treasury/merchant `0x7D6d956b4A57d8193Ad935E0B9382dF39efEFb2C` — owner key held
+only in the operator's local `PAYTHOS_DEPLOYER_KEY` env, never committed. Settlement
+token = native USDC precompile `0x3600…0000`.
+
 ## Domain Vocabulary (use consistently)
 
 - **Vault** — `PaythosVault.sol`; custody + policy enforcement + batch settlement.
