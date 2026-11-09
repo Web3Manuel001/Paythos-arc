@@ -38,11 +38,16 @@ treasury address; deployment scripts fail closed if it is missing or zero-addres
 Reference prior deployment (historical, not to be migrated): Arc Testnet vault
 `0xa9d5525BE440831c64695d30c915DF303E0151EF`, explorer `testnet.arcscan.app`.
 
-**Current live build deployment** (Gate 2 E2E, 2026-11-07): Arc Testnet vault
-`0x5E7Ffad3da280533C8Abf886fB2DaE225EE00c4C` (deploy tx `0x72e9fec9d03c6699a2b520fc0e9935c79eb04155d9d096c33b7891ed71e96406`),
+**Current live build deployment** (PROTOCOL v3, 2026-11-09): Arc Testnet vault
+`0xD69eA0ab9671549095D473E5176579ee879373Ce` (deploy tx `0x69e20da8b578feda290294edf9cf198a07b6cd8a97f9fb95a0d2d6913e3a7895`),
 owner/treasury/merchant `0x7D6d956b4A57d8193Ad935E0B9382dF39efEFb2C` — owner key held
 only in the operator's local `PAYTHOS_DEPLOYER_KEY` env, never committed. Settlement
-token = native USDC precompile `0x3600…0000`.
+token = native USDC precompile `0x3600…0000`. Full E2E PASS (epoch-synced claim tx
+`0xa874d4f291be7a1eb2210e9c7ebda4f765e2f3bab8998095af7d17e597876c69`, block 71523116,
+fee 150 bps, replay rejected) plus the INV-6 live proof via `scripts/arc-inv6-live.ts`:
+re-authorization bumped epoch 1→2, a monotonic-valid stale-epoch voucher REVERTED
+(`SessionEpochMismatch`), and the live-epoch claim settled under clean-slate semantics.
+The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the current build.
 
 ## Domain Vocabulary (use consistently)
 
