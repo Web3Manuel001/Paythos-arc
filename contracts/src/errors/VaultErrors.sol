@@ -20,6 +20,9 @@ library VaultErrors {
     error InvalidVoucherAmount();
     /// Voucher delta exceeds this delegation's single-tx ceiling (INV-3).
     error MaxPerTxExceeded();
+    /// `voucher.epoch ≠ agent.epoch` — voucher predates the current delegation
+    ///      (INV-6 Delegation Epoch Binding; SECURITY.md).
+    error SessionEpochMismatch();
     /// Rolling 24h ceiling would be breached (INV-2 Daily Ceiling).
     error DailyLimitExceeded();
     /// `memoHash` argument disagrees with `voucher.memo`.

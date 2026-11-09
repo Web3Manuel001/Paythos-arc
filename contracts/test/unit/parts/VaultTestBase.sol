@@ -60,6 +60,8 @@ contract VaultTestBase is Test {
     }
 
     /// @notice Signs a voucher for `agent`'s privkey (`agentPriv` = AGENT_KEY style).
+    ///      The epoch is read from the vault (INV-6): signers embed the live
+    ///      delegation epoch in every voucher.
     function signVoucher(
         uint256 agentPriv,
         address voucherMerchant,
@@ -73,6 +75,7 @@ contract VaultTestBase is Test {
             token: address(usdc),
             cumulativeAmount: cumulativeAmount,
             validUntil: validUntil,
+            epoch: vault.epochOf(vm.addr(agentPriv)),
             memo: memo
         });
         signature = signDigest(agentPriv, voucher);

@@ -107,13 +107,14 @@ export function makeAutoGenHandlers(
   };
 }
 
-function serialize(v: { agentKey: string; merchant: string; token: string; cumulativeAmount: bigint; validUntil: bigint; memo: string }) {
+function serialize(v: { agentKey: string; merchant: string; token: string; cumulativeAmount: bigint; validUntil: bigint; epoch: number; memo: string }) {
   return {
     agentKey: v.agentKey,
     merchant: v.merchant,
     token: v.token,
     cumulativeAmount: v.cumulativeAmount.toString(),
     validUntil: v.validUntil.toString(),
+    epoch: v.epoch,
     memo: v.memo,
   };
 }

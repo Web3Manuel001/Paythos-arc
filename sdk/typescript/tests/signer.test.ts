@@ -8,6 +8,7 @@ function makeSigner(): AgentVoucherSigner {
   return new AgentVoucherSigner({
     privateKey: ephemeralPrivateKey(),
     domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+    epoch: 1,
   });
 }
 
@@ -26,6 +27,7 @@ describe("AgentVoucherSigner", () => {
         token: signed.voucher.token,
         cumulativeAmount: signed.voucher.cumulativeAmount,
         validUntil: signed.voucher.validUntil,
+        epoch: signed.voucher.epoch,
         memo: signed.voucher.memo,
       },
       signed.signature,
@@ -60,11 +62,28 @@ describe("AgentVoucherSigner", () => {
     expect(() => domainFor({ network: "arc:mainnet", vaultAddress: TEST_VAULT })).toThrow(/not verified/);
   });
 
-  it("resetMerchant clears the session ledger for the merchant", async () => {
+  it("settleMerchant never lowers the cumulative baseline below on-chain claimed (INV-1)", async () => {
     const signer = makeSigner();
     await signer.recordAndSign(TEST_MERCHANT, parseUsdToMicro("0.5"), "0x" + "66".repeat(32));
-    signer.resetMerchant(TEST_MERCHANT);
-    expect(signer.ledgerSnapshot()).toHaveLength(0);
+    const signedTotal = parseUsdToMicro("0.5");
+
+    // Settlement below the signed total: ledger stays where it is.
+    signer.settleMerchant(TEST_MERCHANT, parseUsdToMicro("0.4"));
+    expect(signer.ledgerSnapshot()[0]!.cumulativeAmount).toBe(signedTotal);
+
+    // Chain ahead of the ledger (partial sign + larger claimed): adopt claimed.
+    signer.settleMerchant(TEST_MERCHANT, parseUsdToMicro("1.0"));
+    expect(signer.ledgerSnapshot()[0]!.cumulativeAmount).toBe(parseUsdToMicro("1.0"));
+
+    // The NEXT voucher continues monotonically from the pinned baseline.
+    const next = await signer.recordAndSign(TEST_MERCHANT, parseUsdToMicro("0.1"), "0x" + "77".repeat(32));
+    expect(next.ok).toBe(true);
+    if (next.ok) expect(next.voucher.cumulativeAmount).toBe(parseUsdToMicro("1.1"));
+  });
+
+  it("settleMerchant rejects negative claimed totals (fail closed)", () => {
+    const signer = makeSigner();
+    expect(() => signer.settleMerchant(TEST_MERCHANT, -1n)).toThrow(/non-negative/);
   });
 });
 

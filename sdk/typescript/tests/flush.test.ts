@@ -37,6 +37,7 @@ function makeSigner(): AgentVoucherSigner {
   return new AgentVoucherSigner({
     privateKey: ephemeralPrivateKey(),
     domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+    epoch: 1,
   });
 }
 
@@ -45,7 +46,7 @@ function makeAccumulator(signer: AgentVoucherSigner, handler?: RecordingHandler)
     network: TESTNET,
     vaultAddress: TEST_VAULT,
     settlementToken: AR_NATIVE_USDC,
-    authorizedAgents: new Set([signer.agentKey.toLowerCase()]),
+    authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
     flushThresholdMicro: 400n,
     onFlushReady: handler?.onFlushReady,
   });
@@ -73,7 +74,7 @@ describe("VoucherAccumulator — settled-state bookkeeping", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_NATIVE_USDC,
-      authorizedAgents: new Set([signer.agentKey.toLowerCase()]),
+      authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       creditToleranceMicro: 1_000n,
     });
     const first = await signer.recordAndSign(TEST_MERCHANT, 100n, MEMO);
@@ -119,7 +120,7 @@ describe("FlushDaemon", () => {
     const daemon = new FlushDaemon({ submitter, receipts: store });
     const acc = makeAccumulator(signer);
 
-    const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, memo: `0x${"0".repeat(64)}` };
+    const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, epoch: 1, memo: `0x${"0".repeat(64)}` };
     await daemon.settle({ agentKey: signer.agentKey, merchant: TEST_MERCHANT, voucher, signature: "0xfeed" }, acc);
 
     expect(submitter.calls.length).toBe(1);
@@ -137,7 +138,7 @@ describe("FlushDaemon", () => {
     const submitter = new CapturingSubmitter();
     const store = new MemoryReceiptStore();
     const daemon = new FlushDaemon({ submitter, receipts: store });
-    const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, memo: `0x${"0".repeat(64)}` };
+    const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, epoch: 1, memo: `0x${"0".repeat(64)}` };
     const plan = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, voucher, signature: "0xfeed" };
     await daemon.settle(plan);
     await daemon.settle(plan); // duplicate trigger
@@ -150,7 +151,7 @@ describe("FlushDaemon", () => {
     submitter.failWith = "execution reverted: InvalidVoucherAmount";
     const store = new MemoryReceiptStore();
     const daemon = new FlushDaemon({ submitter, receipts: store });
-    const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, memo: `0x${"0".repeat(64)}` };
+    const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, epoch: 1, memo: `0x${"0".repeat(64)}` };
     await daemon.settle({ agentKey: signer.agentKey, merchant: TEST_MERCHANT, voucher, signature: "0xfeed" });
     const receipt = (await store.load()).get(`${signer.agentKey.toLowerCase()}:${TEST_MERCHANT.toLowerCase()}`);
     expect(receipt?.alreadySettled).toBe(true);

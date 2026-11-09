@@ -20,12 +20,13 @@ def make_pair(price_micro: int, token: str = AR_NATIVE_USDC):
     signer = AgentVoucherSigner(
         private_key=ephemeral_private_key(),
         domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
     )
     config = MerchantVerifierConfig(
         network=TESTNET,
         vault_address=TEST_VAULT,
         settlement_token=token,
-        authorized_agents={signer.agent_key.lower()},
+        authorized_agents={signer.agent_key.lower(): 1},
     )
     accumulator = VoucherAccumulator(config)
     return signer, accumulator
@@ -77,13 +78,14 @@ def test_rejects_unauthorized_agent() -> None:
     signer = AgentVoucherSigner(
         private_key=ephemeral_private_key(),
         domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
     )
     accumulator = VoucherAccumulator(
         MerchantVerifierConfig(
             network=TESTNET,
             vault_address=TEST_VAULT,
             settlement_token=AR_NATIVE_USDC,
-            authorized_agents={"0x7777777777777777777777777777777777777777"},
+            authorized_agents={"0x7777777777777777777777777777777777777777": 1},
         )
     )
     memo = GoferPolicyEngine.intent_memo("p", 1_700_000_000)
@@ -96,13 +98,14 @@ def test_credit_wall_halts_above_tolerance() -> None:
     signer = AgentVoucherSigner(
         private_key=ephemeral_private_key(),
         domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
     )
     accumulator = VoucherAccumulator(
         MerchantVerifierConfig(
             network=TESTNET,
             vault_address=TEST_VAULT,
             settlement_token=AR_NATIVE_USDC,
-            authorized_agents={signer.agent_key.lower()},
+            authorized_agents={signer.agent_key.lower(): 1},
             credit_tolerance_micro=parse_usd_to_micro("1"),
         )
     )
@@ -147,13 +150,14 @@ def test_flush_plan_fires_at_six_dollars() -> None:
     signer = AgentVoucherSigner(
         private_key=ephemeral_private_key(),
         domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
     )
     accumulator = VoucherAccumulator(
         MerchantVerifierConfig(
             network=TESTNET,
             vault_address=TEST_VAULT,
             settlement_token=AR_NATIVE_USDC,
-            authorized_agents={signer.agent_key.lower()},
+            authorized_agents={signer.agent_key.lower(): 1},
             credit_tolerance_micro=parse_usd_to_micro("10"),
             on_flush_ready=on_flush,
         )

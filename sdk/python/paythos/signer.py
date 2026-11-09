@@ -35,6 +35,7 @@ VOUCHER_TYPES: dict[str, list[dict[str, str]]] = {
         {"name": "token", "type": "address"},
         {"name": "cumulativeAmount", "type": "uint256"},
         {"name": "validUntil", "type": "uint256"},
+        {"name": "epoch", "type": "uint64"},
         {"name": "memo", "type": "bytes32"},
     ],
 }
@@ -79,7 +80,7 @@ def domain_for(args: SigningDomainArgs) -> dict[str, object]:
         )
     return {
         "name": "Paythos Protocol",
-        "version": "2",
+        "version": "3",  # PROTOCOL v3 — epoch-bound vouchers (INV-6)
         "chainId": entry.chain_id,
         "verifyingContract": to_checksum_address(args.vault_address),
     }
@@ -98,6 +99,7 @@ class AgentVoucherSigner:
         *,
         private_key: str,
         domain: SigningDomainArgs,
+        epoch: int,
         voucher_ttl_seconds: int = 3600,
         ledger: dict[str, LedgerEntry] | None = None,
     ) -> None:
@@ -106,10 +108,26 @@ class AgentVoucherSigner:
         self._ledger: dict[str, LedgerEntry] = ledger if ledger is not None else {}
         self._ttl = voucher_ttl_seconds
         self._domain = domain_for(domain)
+        self.set_epoch(epoch)
 
     @property
     def agent_key(self) -> str:
         return to_checksum_address(self._account.address)
+
+    @property
+    def epoch(self) -> int:
+        """The delegation epoch embedded in every voucher (INV-6)."""
+        return self._epoch
+
+    def set_epoch(self, epoch: int) -> None:
+        """
+        Rotate the delegation epoch (INV-6): required after an on-chain
+        re-authorization — the NEXT voucher must carry the new epoch or the
+        vault reverts with ``SessionEpochMismatch``.
+        """
+        if not isinstance(epoch, int) or epoch <= 0:
+            raise PaythosError("policy_failure", f"epoch must be a positive integer, got {epoch!r}")
+        self._epoch = epoch
 
     @property
     def domain(self) -> dict[str, object]:
@@ -160,6 +178,7 @@ class AgentVoucherSigner:
             token=token,
             cumulative_amount=next_total,
             valid_until=valid_until if valid_until is not None else now + self._ttl,
+            epoch=self._epoch,
             memo=memo,
         )
         try:
@@ -181,9 +200,25 @@ class AgentVoucherSigner:
             headers=build_voucher_headers(voucher, signature),
         )
 
-    def reset_merchant(self, merchant: str) -> None:
-        """Mark a merchant's ledger settled (post-flush); the next claim starts fresh."""
-        self._ledger.pop(merchant.lower(), None)
+    def settle_merchant(self, merchant: str, claimed_total: int) -> None:
+        """
+        Pin the ledger to an on-chain settlement (post-flush, INV-1): the vault
+        compares ``cumulativeAmount`` against ``claimed`` FOREVER — it never
+        resets. The old ``reset_merchant`` deleted the entry, restarted the
+        cumulative at 0, and every later claim reverted (reviewer catch).
+        Only ever RAISES the baseline to what the chain actually recorded.
+        """
+        if claimed_total < 0:
+            raise PaythosError("policy_failure", "claimed_total must be non-negative")
+        lower = merchant.lower()
+        entry = self._ledger.get(lower)
+        if entry is not None and entry.cumulative_amount >= claimed_total:
+            return  # ledger already ahead (signed but unclaimed)
+        self._ledger[lower] = LedgerEntry(
+            merchant=to_checksum_address(merchant),
+            cumulative_amount=claimed_total,
+            last_signed_at=time.time(),
+        )
 
     def ledger_snapshot(self) -> list[LedgerEntry]:
         return list(self._ledger.values())
@@ -204,6 +239,7 @@ def typed_data_message(domain: dict[str, object], voucher: Voucher) -> dict[str,
             "token": voucher.token,
             "cumulativeAmount": voucher.cumulative_amount,
             "validUntil": voucher.valid_until,
+            "epoch": voucher.epoch,
             "memo": voucher.memo,
         },
     }
@@ -227,6 +263,7 @@ def build_voucher_headers(voucher: Voucher, signature: str) -> dict[str, str]:
                 "token": voucher.token,
                 "cumulativeAmount": str(voucher.cumulative_amount),
                 "validUntil": str(voucher.valid_until),
+                "epoch": str(voucher.epoch),
                 "memo": voucher.memo,
             },
             separators=(",", ":"),

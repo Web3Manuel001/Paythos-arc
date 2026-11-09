@@ -24,7 +24,7 @@ export const DEFAULT_TIERS: TierThresholds = {
 
 export type PolicyDecision =
   | { action: "allow"; tier: 1 | 2 | 3; reason: string }
-  | { action: "human_approval_required"; tier: 2; reason: string }
+  | { action: "human_approval_required"; tier: 2 | 3; reason: string }
   | { action: "deny"; tier: 3 | null; failure: PolicyEvaluatedFailure };
 
 export interface PolicyContext {
@@ -85,15 +85,20 @@ export class GoferPolicyEngine {
         failure: { code: "daily_limit_exceeded", detail: "insufficient rolling-24h allowance" },
       };
     }
-    if (ctx.amountMicro > this.tiers.microAutoExecMicro && ctx.amountMicro <= this.tiers.humanApprovalUpperMicro) {
+    if (ctx.amountMicro > this.tiers.microAutoExecMicro) {
+      // Reviewer catch: BOTH upper bands ($1–$10 AND $10–$25) require a human.
+      // The old logic auto-allowed $10–$25 while demanding approval for the
+      // SMALLER $1–$10 band — inverted risk (bigger spends, less oversight).
       return {
         action: "human_approval_required",
-        tier: 2,
-        reason: "Tier 2: spend sits in the human review band",
+        tier: ctx.amountMicro > this.tiers.humanApprovalUpperMicro ? 3 : 2,
+        reason:
+          ctx.amountMicro > this.tiers.humanApprovalUpperMicro
+            ? "Tier 3: below the hard ceiling but above the humanApprovalUpper band — human approval required"
+            : "Tier 2: spend sits in the human review band",
       };
     }
-    const tier: 1 | 3 = ctx.amountMicro > this.tiers.humanApprovalUpperMicro ? 3 : 1;
-    return { action: "allow", tier, reason: "within policy" };
+    return { action: "allow", tier: 1, reason: "within policy — Tier 1 auto-exec band" };
   }
 
   /** Structured dryRun report (Module 4.1) — pure, moves no capital. */
@@ -114,7 +119,7 @@ export class GoferPolicyEngine {
           reason: decision.reason,
           remainingAllowanceMicro: ctx.remainingAllowanceMicro - ctx.amountMicro,
           requiresHumanApproval: true,
-          tier: 2,
+          tier: decision.tier,
         };
       case "deny":
         return {

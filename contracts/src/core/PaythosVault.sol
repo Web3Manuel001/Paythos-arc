@@ -13,7 +13,7 @@ import {VoucherTypes} from "../types/VoucherTypes.sol";
 import {PolicyTypes} from "../types/PolicyTypes.sol";
 import {VaultErrors} from "../errors/VaultErrors.sol";
 import {VaultEvents} from "../events/VaultEvents.sol";
-import {RollingWindow} from "../libraries/RollingWindow.sol";
+import {SlidingWindow} from "../libraries/SlidingWindow.sol";
 import {FeeDistribution} from "../libraries/FeeDistribution.sol";
 
 /**
@@ -45,8 +45,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
 
     struct AgentState {
         PolicyTypes.Policy policy;
-        uint256 spentToday;
-        uint256 windowStart;
+        SlidingWindow.Window window; // exact sliding 24h spend buckets (INV-2)
         bool active;
         // Clean-slate epoch (docs/fixtures/DelegationLifecycle): each `authorizeAgent`
         // bumps this, orphaning every per-pair cumulative claim from prior windows.
@@ -63,15 +62,17 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     mapping(address agentKey => AgentState state) private _agents;
     /// @notice agentKey => epoch-scoped cumulative amount already settled per merchant (INV-1).
     mapping(address agentKey => mapping(address merchant => PairClaim claim)) private _claims;
-    /// @notice agentKey => merchant destination allowlist (Module 4.5).
+    /// @notice Destination allowlist (Module 4.5), cleared on re-authorization.
     mapping(address agentKey => mapping(address merchant => bool allowed)) private _allowedMerchants;
+    /// @notice Enumeration for O(clear) allowlist resets in `authorizeAgent`.
+    mapping(address agentKey => address[] merchants) private _allowedMerchantList;
 
     modifier onlyActiveAgent(address agentKey) {
         if (!_agents[agentKey].active) revert VaultErrors.UnauthorizedAgent();
         _;
     }
 
-    constructor(IERC20 settlementToken_, address treasury_) Ownable(msg.sender) EIP712("Paythos Protocol", "2") {
+    constructor(IERC20 settlementToken_, address treasury_) Ownable(msg.sender) EIP712("Paythos Protocol", VoucherTypes.PROTOCOL_VERSION) {
         if (address(settlementToken_) == address(0)) revert VaultErrors.ZeroAddress();
         if (treasury_ == address(0)) revert VaultErrors.ZeroAddress(); // fail closed
         SETTLEMENT_TOKEN = settlementToken_;
@@ -110,20 +111,33 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     // ============================================================
 
     /// @notice Bind `agentKey` to `policy`. Authorizing an existing key resets
-    ///      its rolling window and claims — clean-slate semantics (fail closed).
+    ///      its rolling window, claims AND destination allowlist — clean-slate
+    ///      semantics, fail closed (docs/fixtures/DelegationLifecycle).
     function authorizeAgent(address agentKey, PolicyTypes.Policy calldata policy) external onlyOwner {
         if (agentKey == address(0)) revert VaultErrors.ZeroAddress();
         if (policy.expiresAt <= block.timestamp) revert VaultErrors.SessionExpired();
         if (policy.maxPerTx > policy.dailyLimit) revert VaultErrors.MaxPerTxExceeded();
 
+        _clearAllowlist(agentKey);
+        SlidingWindow.Window memory freshWindow;
         _agents[agentKey] = AgentState({
             policy: policy,
-            spentToday: 0,
-            windowStart: block.timestamp, // fresh window opens now
+            window: freshWindow, // all-zero buckets: fresh delegation opens empty
             active: true,
-            epoch: _agents[agentKey].epoch + 1 // clean-slate: orphans stale pair claims
+            epoch: _agents[agentKey].epoch + 1 // clean-slate: orphans stale pair claims + stale vouchers
         });
         emit VaultEvents.AgentAuthorized(agentKey, policy.dailyLimit, policy.maxPerTx, policy.expiresAt);
+    }
+
+    /// @notice Sweep every allowed-flagged merchant for `agentKey` (allowlist
+    ///      push-enumeration below keeps the list complete; INV-6 clean slate).
+    function _clearAllowlist(address agentKey) private {
+        address[] storage list = _allowedMerchantList[agentKey];
+        uint256 count = list.length;
+        for (uint256 i; i < count; ++i) {
+            delete _allowedMerchants[agentKey][list[i]];
+        }
+        delete _allowedMerchantList[agentKey];
     }
 
     /// @notice Owner kill-switch: instant on-chain revocation (INV-4 backstop).
@@ -135,9 +149,13 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice Add a merchant address to an agent's destination allowlist.
+    ///      Enumeration list is kept for the clean-slate sweep in authorizeAgent.
     function allowMerchant(address agentKey, address merchant) external onlyOwner onlyActiveAgent(agentKey) {
         if (merchant == address(0)) revert VaultErrors.ZeroAddress();
-        _allowedMerchants[agentKey][merchant] = true;
+        if (!_allowedMerchants[agentKey][merchant]) {
+            _allowedMerchants[agentKey][merchant] = true;
+            _allowedMerchantList[agentKey].push(merchant);
+        }
         emit VaultEvents.MerchantAllowed(agentKey, merchant);
     }
 
@@ -169,6 +187,10 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
         if (block.timestamp > voucher.validUntil) revert VaultErrors.SessionExpired();
         if (block.timestamp > agent.policy.expiresAt) revert VaultErrors.SessionExpired();
 
+        // ---- INV-6: the voucher was signed under the CURRENT delegation epoch;
+        //      pre-reauthorization vouchers can never replay into fresh claims.
+        if (voucher.epoch != agent.epoch) revert VaultErrors.SessionEpochMismatch();
+
         // ---- Token binding: vouchers can never transcend the vault's own chain-token ----
         if (voucher.token != address(SETTLEMENT_TOKEN)) revert VaultErrors.TokenMismatch();
 
@@ -195,17 +217,18 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
         // ---- INV-3: per-tx ceiling ----
         if (delta > agent.policy.maxPerTx) revert VaultErrors.MaxPerTxExceeded();
 
-        // ---- INV-2: rolling 24h daily ceiling (dynamic, no cron) ----
-        (uint256 spentToday_, uint256 windowStart_) =
-            RollingWindow.applyRollover(block.timestamp, agent.spentToday, agent.windowStart, false);
-        if (spentToday_ + delta > agent.policy.dailyLimit) revert VaultErrors.DailyLimitExceeded();
+        // ---- INV-2: EXACT sliding 24h daily ceiling (hourly buckets, no cron) ----
+        SlidingWindow.Window storage window = agent.window;
+        uint64 hourIndex = uint64(block.timestamp / SlidingWindow.HOUR);
+        if (SlidingWindow.spent(window, hourIndex) + delta > agent.policy.dailyLimit) {
+            revert VaultErrors.DailyLimitExceeded();
+        }
 
         // ---- Fee routing: deduct at source (docs/ARCHITECTURE.md Module 1.6) ----
         (uint256 fee, uint256 net) = FeeDistribution.split(delta, _feeBps);
 
         // ---- Effects before interactions ----
-        agent.spentToday = spentToday_ + delta;
-        agent.windowStart = windowStart_;
+        SlidingWindow.add(window, hourIndex, delta);
         priorClaim.epoch = agent.epoch;
         priorClaim.cumulativeClaimed = voucher.cumulativeAmount;
 
@@ -251,8 +274,16 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     }
 
     function spentToday(address agentKey) external view returns (uint256) {
-        if (!_agents[agentKey].active) return 0;
-        return RollingWindow.current(block.timestamp, _agents[agentKey].spentToday, _agents[agentKey].windowStart);
+        AgentState storage agent = _agents[agentKey];
+        if (!agent.active) return 0;
+        return SlidingWindow.spent(agent.window, uint64(block.timestamp / SlidingWindow.HOUR));
+    }
+
+    /// @notice Current delegation epoch — agents MUST embed it into every voucher
+    ///      (INV-6). Off-chain signers read it right after `authorizeAgent` and
+    ///      after every re-authorization (clean-slate session rotation).
+    function epochOf(address agentKey) external view returns (uint64) {
+        return _agents[agentKey].epoch;
     }
 
     function claimed(address agentKey, address merchant) external view returns (uint256) {
@@ -264,7 +295,9 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     function remainingAllowance(address agentKey) external view returns (uint256) {
         AgentState storage agent = _agents[agentKey];
         if (!agent.active) return 0;
-        return agent.policy.dailyLimit - RollingWindow.current(block.timestamp, agent.spentToday, agent.windowStart);
+        uint256 hourIndex = uint64(block.timestamp / SlidingWindow.HOUR);
+        uint256 used = SlidingWindow.spent(agent.window, uint64(hourIndex));
+        return used < agent.policy.dailyLimit ? agent.policy.dailyLimit - used : 0;
     }
 
     function feeBps() external view returns (uint256) {

@@ -47,7 +47,7 @@ token = native USDC precompile `0x3600…0000`.
 ## Domain Vocabulary (use consistently)
 
 - **Vault** — `PaythosVault.sol`; custody + policy enforcement + batch settlement.
-- **Voucher** — EIP-712 signed struct: `agentKey, merchant, token, cumulativeAmount, validUntil`. Always cumulative, never per-call amounts.
+- **Voucher** — EIP-712 signed struct (PROTOCOL v3 domain version `"3"`): `agentKey, merchant, token, cumulativeAmount, validUntil, epoch`. Always cumulative, never per-call amounts. `epoch` binds the voucher to one `authorizeAgent` generation (INV-6): re-authorization/revocation bumps it and stale vouchers revert with `SessionEpochMismatch`.
 - **Policy struct** — `dailyLimit`, `maxPerTx`, `expiresAt` (TTL), allowlist set.
 - **Flush** — merchant-side batch settlement of accumulated vouchers to the vault.
 - **Transactability Index** — merchant health score (uptime, response validity, latency, 5xx rate).
@@ -59,7 +59,7 @@ token = native USDC precompile `0x3600…0000`.
 ## Non-Negotiable Design Rules
 
 1. **Non-custodial always.** The human owner retains emergency withdrawal rights. No pooled liquidity, no rehypothecation, no yield logic.
-2. **Deltas are enforced on-chain.** `claimVoucher()` must require `cumulativeAmount > previousClaim`, `delta <= maxPerTx`, `spentToday + delta <= dailyLimit` against a rolling 24h window computed from `block.timestamp` (no oracles, no cron).
+2. **Deltas are enforced on-chain.** `claimVoucher()` must require `cumulativeAmount > previousClaim`, `delta <= maxPerTx`, `spentToday + delta <= dailyLimit` against a rolling 24h window computed from `block.timestamp` on exact hour boundaries (24-slot `SlidingWindow` ring; no oracles, no cron). It must also require the ACTIVE delegation epoch (INV-6).
 3. **Fail closed.** Policy ambiguity → halt. Never default to allow.
 4. **Never build custody, bridging, or marketplace features** — that is Circle's lane. Cross-chain funding is done by calling Circle's CCTP attestation/minting rail only. Paythos ingests Circle's tools (Discovery API, CCTP); it never re-implements settlement rails Circle already provides.
 5. **Secrets hygiene.** Ephemeral keys come from environment variables (`PAYTHOS_EPHEMERAL_KEY`, `PAYTHOS_VAULT_ADDRESS`, …). Nothing key-related is ever logged, committed, or embedded. EIP-712 messages may be logged; signatures of real spend cannot be replayed across sessions.

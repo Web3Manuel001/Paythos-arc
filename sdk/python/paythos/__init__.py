@@ -13,6 +13,7 @@ from .client import (
 from .errors import PaythosError
 from .middleware import (
     FlushPlan,
+    MerchantChallengeContext,
     MerchantVerifierConfig,
     VerifyOutcome,
     VoucherAccumulator,
@@ -87,6 +88,7 @@ __all__ = [
     "serialize_voucher",
     "PaythosError",
     "FlushPlan",
+    "MerchantChallengeContext",
     "MerchantVerifierConfig",
     "VerifyOutcome",
     "VoucherAccumulator",

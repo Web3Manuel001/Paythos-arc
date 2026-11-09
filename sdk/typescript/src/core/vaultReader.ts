@@ -63,6 +63,15 @@ export class VaultReader {
     return this.#call("isAgentActive", [agentKey], (r) => r[0] as boolean);
   }
 
+  /**
+   * Live delegation epoch (INV-6): signers MUST embed this in every voucher;
+   * call it after `authorizeAgent` and after every re-authorization.
+   */
+  async epochOf(agentKey: string): Promise<number> {
+    const epoch = await this.#call("epochOf", [agentKey], (r) => r[0] as bigint);
+    return Number(epoch);
+  }
+
   /** Unexpired Remaining allowance in the rolling 24h window (INV-2). */
   async remainingAllowance(agentKey: string): Promise<bigint> {
     return this.#call("remainingAllowance", [agentKey], (r) => r[0] as bigint);

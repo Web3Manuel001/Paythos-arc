@@ -89,6 +89,7 @@ contract ReentrancyVector is Test {
             token: address(usdc),
             cumulativeAmount: cumulativeAmount,
             validUntil: block.timestamp + 1 hours,
+            epoch: vault.epochOf(agent),
             memo: keccak256("reentrancy-vector")
         });
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", vault.DOMAIN_SEPARATOR(), voucher.structHash()));

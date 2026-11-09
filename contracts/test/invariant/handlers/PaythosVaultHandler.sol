@@ -39,6 +39,14 @@ contract PaythosVaultHandler is Test {
 
     mapping(address => uint256) internal paidByAgent;
 
+    /// @notice Every successful settlement minute-stamped (sliding-window audits).
+    struct ClaimRecord {
+        uint64 at;
+        uint64 agentIndex; // index into agentKeys (2 bits used)
+        uint256 amount;
+    }
+    ClaimRecord[] internal claimHistory;
+
     constructor(
         PaythosVault vault_,
         MockUSDC usdc_,
@@ -131,11 +139,35 @@ contract PaythosVaultHandler is Test {
         ghostPayoutTotal += merchantDelta;
         ghostFeeTotal += treasuryDelta;
         paidByAgent[agentKey] += merchantDelta;
+        claimHistory.push(ClaimRecord({at: uint64(block.timestamp), agentIndex: uint64(i), amount: delta}));
 
         // INV-1/2/3 post-call integrity:
         assertEq(vault.claimed(agentKey, merchant), cumulative); // INV-1 monotonic
         assertLe(spentTodayAfter, policy.dailyLimit); // INV-2 ceiling
         assertLe(delta, policy.maxPerTx); // INV-3 per-tx bound
+    }
+
+    function claimHistoryCount() external view returns (uint256) {
+        return claimHistory.length;
+    }
+
+    function claimRecord(uint256 index) external view returns (uint64 at, uint64 agentIndex, uint256 amount) {
+        ClaimRecord memory r = claimHistory[index];
+        return (r.at, r.agentIndex, r.amount);
+    }
+
+    /// @notice Clean-slate drop of one agent's settlement history (epoch roll).
+    function _dropHistory(uint64 agentIndex) internal {
+        uint256 write;
+        for (uint256 read; read < claimHistory.length; ++read) {
+            if (claimHistory[read].agentIndex != agentIndex) {
+                claimHistory[write++] = claimHistory[read];
+            }
+        }
+        /// Shrink to the kept prefix (assembly-free compaction of trailing slots).
+        while (claimHistory.length > write) {
+            claimHistory.pop();
+        }
     }
 
     function _postClaim(address merchant_, VoucherTypes.Voucher memory voucher, bytes memory sig)
@@ -215,6 +247,7 @@ contract PaythosVaultHandler is Test {
         });
         vm.prank(owner);
         vault.authorizeAgent(agentKey, fresh);
+        _dropHistory(uint64(agentSeed % AGENTS));
         for (uint256 m; m < MERCHANTS; ++m) {
             vm.prank(owner);
             vault.allowMerchant(agentKey, merchantKeys[m]);
@@ -242,6 +275,7 @@ contract PaythosVaultHandler is Test {
             token: address(usdc),
             cumulativeAmount: cumulative,
             validUntil: block.timestamp + 5 hours,
+            epoch: vault.epochOf(vm.addr(agentPriv)),
             memo: keccak256(abi.encode("inv-fuzz", cumulative, merchant))
         });
     }
@@ -253,6 +287,9 @@ contract PaythosVaultHandler is Test {
     {
         voucher = _voucher(agentPriv, merchant, cumulative);
         voucher.memo = keccak256(abi.encode("inv-stale", cumulative, merchant));
+        // INV-6 staleness vector: epoch of a PREVIOUS delegation (epoch ≥ 1 always,
+        // so epoch-1 is never the live epoch for a legitimately-authorized agent).
+        voucher.epoch = vault.epochOf(voucher.agentKey) - 1;
     }
 
     function _sign(uint256 i, VoucherTypes.Voucher memory voucher) internal view returns (bytes memory) {

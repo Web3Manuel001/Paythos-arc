@@ -22,6 +22,7 @@ export const VOUCHER_TYPES: Record<string, Array<{ name: string; type: string }>
     { name: "token", type: "address" },
     { name: "cumulativeAmount", type: "uint256" },
     { name: "validUntil", type: "uint256" },
+    { name: "epoch", type: "uint64" },
     { name: "memo", type: "bytes32" },
   ],
 };
@@ -37,6 +38,12 @@ export interface AgentVoucherSignerConfig {
   /** Ephemeral key from PAYTHOS_EPHEMERAL_KEY (AGENTS.md secrets hygiene). */
   privateKey: string;
   domain: SigningDomainArgs;
+  /**
+   * Delegation epoch to embed in every voucher (INV-6). The agent service
+   * reads it from `VaultReader.epochOf(agentKey)` right after authorizeAgent
+   * and after every re-authorization. Mandatory — fail closed on omission.
+   */
+  epoch: number;
   /** Ledger persistence (memory-only when absent — see README restart caveat). */
   ledger?: Map<string, LedgerEntry>;
   /** Session TTL default: vouchers expire in 1 hour unless overridden. */
@@ -54,11 +61,13 @@ export class AgentVoucherSigner {
   readonly #ledger: Map<string, LedgerEntry>;
   readonly #ttl: number;
   #domain: TypedDataDomain;
+  #epoch: number;
 
   constructor(cfg: AgentVoucherSignerConfig) {
     this.#wallet = new Wallet(cfg.privateKey);
     this.#ledger = cfg.ledger ?? new Map();
     this.#ttl = cfg.voucherTtlSeconds ?? 3600;
+    this.#epoch = cfg.epoch;
     this.#domain = domainFor(cfg.domain);
   }
 
@@ -70,6 +79,25 @@ export class AgentVoucherSigner {
   /** (Re)bind the EIP-712 domain after e.g. a vault redeploy. */
   rebind(domain: SigningDomainArgs): void {
     this.#domain = domainFor(domain);
+  }
+
+  /**
+   * Rotate the delegation epoch (INV-6): required after a re-authorization —
+   * the NEXT voucher must carry the new epoch or the vault reverts with
+   * `SessionEpochMismatch`. Also resets the local cumulative ledger (the
+   * vault zeros claimed totals on the epoch bump).
+   */
+  setEpoch(epoch: number): void {
+    if (!Number.isInteger(epoch) || epoch <= 0) {
+      throw new PaythosError("policy_failure", `epoch must be a positive integer, got ${String(epoch)}`);
+    }
+    this.#epoch = epoch;
+    this.#ledger.clear();
+  }
+
+  /** The epoch embedded in every voucher this signer produces (INV-6 people can audit). */
+  get epoch(): number {
+    return this.#epoch;
   }
 
   get domain(): Readonly<TypedDataDomain> {
@@ -102,6 +130,7 @@ export class AgentVoucherSigner {
       token,
       cumulativeAmount: nextTotal,
       validUntil: validUntil ?? now + BigInt(this.#ttl),
+      epoch: this.#epoch,
       memo,
     };
     try {
@@ -117,9 +146,25 @@ export class AgentVoucherSigner {
     }
   }
 
-  /** Mark a merchant's ledger settled (post-flush); the next claim starts fresh. */
-  resetMerchant(merchant: string): void {
-    this.#ledger.delete(merchant.toLowerCase());
+  /**
+   * Pin the ledger to an on-chain settlement (post-flush, INV-1): the vault
+   * compares `cumulativeAmount` against `claimed` FOREVER — it never resets.
+   * The old `resetMerchant()` deleted the entry, restarted cumulative at 0,
+   * and every later claim reverted (reviewer catch). This only ever RAISES
+   * the baseline to what the chain has actually recorded as claimed.
+   */
+  settleMerchant(merchant: string, claimedTotal: bigint): void {
+    if (claimedTotal < 0n) {
+      throw new PaythosError("policy_failure", "claimedTotal must be non-negative");
+    }
+    const lower = merchant.toLowerCase();
+    const entry = this.#ledger.get(lower);
+    if (entry && entry.cumulativeAmount >= claimedTotal) return; // ledger already ahead (signed but unclaimed)
+    this.#ledger.set(lower, {
+      merchant: getAddress(merchant),
+      cumulativeAmount: claimedTotal,
+      lastSignedAt: Date.now(),
+    });
   }
 
   /** Current session ledger (MCP `get_vault_budget`, debugging). */
@@ -141,7 +186,7 @@ export function domainFor(args: SigningDomainArgs): TypedDataDomain {
   }
   return {
     name: "Paythos Protocol",
-    version: "2",
+    version: "3", // PROTOCOL v3 — epoch-bound vouchers (INV-6); matches VoucherTypes.PROTOCOL_VERSION
     chainId: registryEntry.chainId,
     verifyingContract: getAddress(args.vaultAddress),
   };
@@ -166,6 +211,7 @@ export async function signVoucher(wallet: Wallet, domain: TypedDataDomain, vouch
     token: voucher.token,
     cumulativeAmount: voucher.cumulativeAmount,
     validUntil: voucher.validUntil,
+    epoch: voucher.epoch,
     memo: voucher.memo,
   });
 }
@@ -186,6 +232,7 @@ function voucherStringMap(v: Voucher): Record<string, string> {
     token: v.token,
     cumulativeAmount: v.cumulativeAmount.toString(),
     validUntil: v.validUntil.toString(),
+    epoch: v.epoch.toString(),
     memo: v.memo,
   };
 }

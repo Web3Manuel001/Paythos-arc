@@ -234,6 +234,7 @@ def serialize_voucher(voucher: object) -> dict[str, str]:
         "token": v.token,  # type: ignore[attr-defined]
         "cumulativeAmount": str(v.cumulative_amount),  # type: ignore[attr-defined]
         "validUntil": str(v.valid_until),  # type: ignore[attr-defined]
+        "epoch": str(v.epoch),  # type: ignore[attr-defined]
         "memo": v.memo,  # type: ignore[attr-defined]
     }
 

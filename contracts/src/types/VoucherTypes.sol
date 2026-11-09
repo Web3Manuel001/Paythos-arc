@@ -18,13 +18,18 @@ library VoucherTypes {
         address token;
         uint256 cumulativeAmount; // monotonically increasing session total
         uint256 validUntil; // hard expiry, unix seconds (SECURITY.md INV-4)
+        uint64 epoch; // delegation epoch the voucher was signed under (INV-6)
         bytes32 memo; // 32-byte structured intent/invoice hash
     }
 
-    /// keccak256("Voucher(address agentKey,address merchant,address token,uint256 cumulativeAmount,uint256 validUntil,bytes32 memo)")
+    /// keccak256("Voucher(address agentKey,address merchant,address token,uint256 cumulativeAmount,uint256 validUntil,uint64 epoch,bytes32 memo)")
     bytes32 public constant VOUCHER_TYPEHASH = keccak256(
-        "Voucher(address agentKey,address merchant,address token,uint256 cumulativeAmount,uint256 validUntil,bytes32 memo)"
+        "Voucher(address agentKey,address merchant,address token,uint256 cumulativeAmount,uint256 validUntil,uint64 epoch,bytes32 memo)"
     );
+
+    /// @notice Protocol version frozen at "3" — v2 lacked the epoch binding and
+    ///      allowed pre-reauthorization vouchers to replay (see SECURITY.md INV-6).
+    string public constant PROTOCOL_VERSION = "3";
 
     function structHash(Voucher memory voucher) internal pure returns (bytes32) {
         return keccak256(
@@ -35,6 +40,7 @@ library VoucherTypes {
                 voucher.token,
                 voucher.cumulativeAmount,
                 voucher.validUntil,
+                voucher.epoch,
                 voucher.memo
             )
         );

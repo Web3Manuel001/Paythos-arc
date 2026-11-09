@@ -89,7 +89,9 @@ contract ClaimHappyPaths is VaultTestBase {
 
         // INV-2: window is rolling — a fresh 24h opens so the OLD tally never stacks:
         // with stacked windows $19.90 + $2.00 = $21.90 would revert DailyLimitExceeded.
-        vm.warp(block.timestamp + 1 days);
+        // Hourly-bucket granularity (docs/SECURITY.md INV-2): the old hour bucket
+        // stays live for ≤1h past exactly-24h, so warp one hour past the boundary.
+        vm.warp(block.timestamp + 1 days + 1 hours);
         cum += 2_000_000;
         (v, s) = signVoucherSimple(AGENT_KEY, cum);
         vm.prank(merchant);
@@ -196,6 +198,7 @@ contract ClaimRevertPaths is VaultTestBase {
             token: makeAddr("not-the-settlement-token"),
             cumulativeAmount: 1e6,
             validUntil: block.timestamp + 1 hours,
+            epoch: vault.epochOf(agent),
             memo: keccak256("memo")
         });
         bytes memory sig = signDigest(AGENT_KEY, voucher);
@@ -238,6 +241,140 @@ contract ClaimRevertPaths is VaultTestBase {
 }
 
 /**
+ * @title AdversarialWindowsSessions
+ * @notice Reviewer PoCs locked as regressions (docs/SECURITY.md INV-2, INV-6).
+ *      Every test here used to FAIL against the pre-fix vault.
+ */
+contract AdversarialWindowsSessions is VaultTestBase {
+    using PolicyTypes for PolicyTypes.Policy;
+
+    function _reauthorize(uint48 ttlHours) internal {
+        PolicyTypes.Policy memory p = PolicyTypes.Policy({
+            dailyLimit: DAILY_LIMIT,
+            maxPerTx: MAX_PER_TX,
+            expiresAt: uint64(block.timestamp + ttlHours)
+        });
+        vm.prank(owner);
+        vault.authorizeAgent(agent, p);
+        vm.prank(owner);
+        vault.allowMerchant(agent, merchant);
+    }
+
+    /// INV-6 epoch binding: a paid voucher replayed after re-authorization
+    /// (epoch bump) must never pay again — the fix for the 1.97→3.94 double-payout.
+    function test_voucher_replay_across_reauthorization_rejected() public {
+        (VoucherTypes.Voucher memory paidVoucher, bytes memory sig) = signVoucherSimple(AGENT_KEY, 2e6);
+        vm.prank(merchant);
+        vault.claimVoucher(paidVoucher, sig);
+        assertEq(vault.claimed(agent, merchant), 2e6);
+
+        _reauthorize(48 hours); // epoch 1 → 2, previousClaimed zeroed (epoch-scoped)
+
+        // Replay the OLD signed voucher verbatim — the epoch field now binds it
+        // to the dead delegation, so the signature alone cannot resettle it.
+        vm.prank(merchant);
+        vm.expectRevert(VaultErrors.SessionEpochMismatch.selector);
+        vault.claimVoucher(paidVoucher, sig);
+        assertEq(vault.claimed(agent, merchant), 0);
+        assertEq(usdc.balanceOf(merchant), 2e6 - (2e6 * FEE_BPS) / 10_000); // single payout only
+    }
+
+    /// INV-6 belt-and-braces: a voucher explicitly stamped with a dead epoch
+    /// (post re-authorization) reverts even with everything else valid.
+    function test_stale_epoch_voucher_rejected() public {
+        _reauthorize(48 hours); // epoch → 2
+        (VoucherTypes.Voucher memory voucher, bytes memory sig) = signVoucherSimple(AGENT_KEY, 1e6);
+        voucher.epoch = vault.epochOf(agent) - 1; // resurrect epoch-1 semantics
+        sig = signDigest(AGENT_KEY, voucher);
+        vm.prank(merchant);
+        vm.expectRevert(VaultErrors.SessionEpochMismatch.selector);
+        vault.claimVoucher(voucher, sig);
+    }
+
+    /// Reviewer PoC "the rolling 24h limit is a fixed window": limit+limit
+    /// double-spent at t+1d−1s and t+1d — must be impossible now.
+    function test_full_spend_one_second_before_window_boundary_rejected() public {
+        uint256 cum;
+        VoucherTypes.Voucher memory v;
+        bytes memory s;
+        for (uint256 i; i < 7; ++i) {
+            cum += 2_500_000;
+            (v, s) = signVoucherSimple(AGENT_KEY, cum);
+            vm.prank(merchant);
+            vault.claimVoucher(v, s);
+        }
+        cum += 2_400_000; // $19.90 — full-limit spend minus the last $0.10
+        (v, s) = signVoucherSimple(AGENT_KEY, cum);
+        vm.prank(merchant);
+        vault.claimVoucher(v, s);
+        assertEq(vault.remainingAllowance(agent), 100_000);
+
+        // One second BEFORE where the old fixed-window would have hard-reset.
+        vm.warp(block.timestamp + 1 days - 1 seconds);
+        cum += 1_000_000;
+        (v, s) = signVoucherSimple(AGENT_KEY, cum);
+        vm.prank(merchant);
+        vm.expectRevert(VaultErrors.DailyLimitExceeded.selector);
+        vault.claimVoucher(v, s);
+        assertEq(vault.remainingAllowance(agent), 100_000);
+    }
+
+    /// INV-2 exactness at the documented hour granularity: a full-limit spend
+    /// fully refills once any true 24h window no longer contains it
+    /// (bucket-precise edge — no limit+limit stack in ANY 24h span).
+    function test_full_spend_refills_after_hour_boundary() public {
+        uint256 cum;
+        VoucherTypes.Voucher memory v;
+        bytes memory s;
+        for (uint256 i; i < 8; ++i) {
+            cum += 2_500_000; // 8 × $2.50 = the full $20 daily ceiling
+            (v, s) = signVoucherSimple(AGENT_KEY, cum);
+            vm.prank(merchant);
+            vault.claimVoucher(v, s);
+        }
+        assertEq(vault.spentToday(agent), DAILY_LIMIT);
+
+        vm.warp(block.timestamp + 1 days + 1 hours);
+        for (uint256 i; i < 8; ++i) {
+            cum += 2_500_000;
+            (v, s) = signVoucherSimple(AGENT_KEY, cum);
+            vm.prank(merchant);
+            vault.claimVoucher(v, s); // every drip must succeed — full refill
+        }
+        assertEq(vault.spentToday(agent), DAILY_LIMIT);
+    }
+
+    /// INV-6 clean slate: the destination allowlist does NOT survive
+    /// re-authorization — the owner re-delegates destinations per epoch.
+    function test_allowlist_cleared_on_reauthorization() public {
+        (VoucherTypes.Voucher memory v, bytes memory s) = signVoucherSimple(AGENT_KEY, 1e6);
+        vm.prank(merchant);
+        vault.claimVoucher(v, s);
+
+        // Re-authorize WITHOUT re-allowlisting the merchant (clean-slate rule).
+        PolicyTypes.Policy memory p = PolicyTypes.Policy({
+            dailyLimit: DAILY_LIMIT,
+            maxPerTx: MAX_PER_TX,
+            expiresAt: uint64(block.timestamp + 48 hours)
+        });
+        vm.prank(owner);
+        vault.authorizeAgent(agent, p);
+
+        (v, s) = signVoucherSimple(AGENT_KEY, 1e6);
+        vm.prank(merchant);
+        vm.expectRevert(VaultErrors.UnauthorizedMerchant.selector);
+        vault.claimVoucher(v, s); // clean slate: merchant must be re-delegated
+
+        vm.prank(owner);
+        vault.allowMerchant(agent, merchant);
+        (v, s) = signVoucherSimple(AGENT_KEY, 2e6);
+        vm.prank(merchant);
+        vault.claimVoucher(v, s); // after re-delegation: normal flow
+        assertEq(vault.claimed(agent, merchant), 2e6);
+    }
+}
+
+/**
  * @title DelegationLifecycle
  * @notice Gate-1: authorize/revoke/kill-switch policy hygiene.
  */
@@ -249,7 +386,10 @@ contract DelegationLifecycle is VaultTestBase {
             PolicyTypes.Policy({dailyLimit: 5e6, maxPerTx: 2_500_000, expiresAt: uint64(block.timestamp + 3 days)});
         vm.prank(owner);
         vault.authorizeAgent(agent, p);
-
+        // Clean-slate re-authorization clears the destination allowlist (INV-6):
+        // the owner MUST re-delegate destinations for the new epoch.
+        vm.prank(owner);
+        vault.allowMerchant(agent, merchant);
         (VoucherTypes.Voucher memory v, bytes memory s) = signVoucherSimple(AGENT_KEY, 2e6);
         vm.prank(merchant);
         vault.claimVoucher(v, s);

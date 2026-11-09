@@ -59,6 +59,7 @@ def make_client(http: httpx.AsyncClient, **kwargs) -> tuple[PaythosClient, Agent
     signer = AgentVoucherSigner(
         private_key=ephemeral_private_key(),
         domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
     )
     client = PaythosClient(
         signer, network=TESTNET, allowlist=ALLOWLIST, http=http, **kwargs
@@ -102,6 +103,7 @@ async def test_denies_merchant_outside_allowlist() -> None:
     signer = AgentVoucherSigner(
         private_key=ephemeral_private_key(),
         domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
     )
     client = PaythosClient(
         signer,

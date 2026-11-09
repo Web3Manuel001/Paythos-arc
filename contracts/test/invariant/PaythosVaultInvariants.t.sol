@@ -99,4 +99,32 @@ contract PaythosVaultInvariants is Test {
             assertLe(vault.spentToday(keys[i]), p.dailyLimit);
         }
     }
+
+    /**
+     * @notice INV-2 STRONG form (reviewer regression): reconstructing the
+     *      settlement history, no agent may hold more than `dailyLimit` within
+     *      any true 24h span. Hourly buckets span at most 25 hour stamps, so
+     *      the 25h window must hold ≤ dailyLimit — anything over would betray
+     *      window-reset manipulation (the "40 USDC in one second" PoC).
+     */
+    function invariant_slidingWindowExactness() public view {
+        uint256 count = handler.claimHistoryCount();
+        for (uint256 i; i < count; ++i) {
+            (uint64 atI, uint64 agentI, ) = handler.claimRecord(i);
+            uint256 span;
+            for (uint256 j; j < count; ++j) {
+                (uint64 atJ, uint64 agentJ, uint256 amountJ) = handler.claimRecord(j);
+                if (agentJ != agentI) continue;
+                unchecked {
+                    if (atJ > atI ? atJ - atI < 25 hours : atI - atJ < 25 hours) span += amountJ;
+                }
+            }
+            assertLe(span, DAILY_LIMIT_LIMIT(),
+                "INV-2 VIOLATION: more than dailyLimit settled inside a 24h span");
+        }
+    }
+
+    function DAILY_LIMIT_LIMIT() internal view returns (uint256) {
+        return vault.getPolicy(handler.agentKeysArr()[0]).dailyLimit;
+    }
 }

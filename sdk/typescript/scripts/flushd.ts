@@ -16,15 +16,17 @@
  * calls only, no keys ever needed here — the tool never submits transactions).
  */
 import { readFileSync } from "node:fs";
+import type { VaultReader } from "../src/core/vaultReader.js";
 import { loadDotEnv } from "../src/config/env.js";
 
 loadDotEnv();
 
-const VAULT = process.env.PAYTHOS_VAULT_ADDRESS;
-if (!VAULT || !/^0x[0-9a-fA-F]{40}$/.test(VAULT)) {
+const VAULT_ENV = process.env.PAYTHOS_VAULT_ADDRESS;
+if (!VAULT_ENV || !/^0x[0-9a-fA-F]{40}$/.test(VAULT_ENV)) {
   console.error("FAIL CLOSED: PAYTHOS_VAULT_ADDRESS missing or malformed");
   process.exit(2);
 }
+const VAULT: string = VAULT_ENV;
 const RPC = process.env.PAYTHOS_RPC_URL?.trim() || "https://rpc.testnet.arc.io";
 const RECEIPTS_PATH = process.env.PAYTHOS_FLUSH_RECEIPTS ?? "flush-receipts.json";
 
@@ -39,7 +41,7 @@ interface ReceiptLine {
 
 async function main(): Promise<void> {
   const { JsonRpcProvider } = await import("ethers");
-  const { VaultReader, vaultReaderFor } = await import("../src/core/vaultReader.js");
+  const { vaultReaderFor } = await import("../src/core/vaultReader.js");
 
   let receipts: Array<[string, ReceiptLine]>;
   try {

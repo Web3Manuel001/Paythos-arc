@@ -105,20 +105,20 @@ class GoferPolicyEngine:
                     detail="insufficient rolling-24h allowance",
                 ),
             )
-        if (
-            self.tiers.micro_auto_exec_micro
-            < ctx.amount_micro
-            <= self.tiers.human_approval_upper_micro
-        ):
+        if ctx.amount_micro > self.tiers.micro_auto_exec_micro:
+            # Reviewer catch: BOTH upper bands ($1–$10 AND $10–$25) require a
+            # human — the $10–$25 band previously auto-allowed (inverted).
+            upper = 3 if ctx.amount_micro > self.tiers.human_approval_upper_micro else 2
             return PolicyDecision(
                 action="human_approval_required",
-                tier=2,
-                reason="Tier 2: spend sits in the human review band",
+                tier=upper,
+                reason=(
+                    "Tier 3: below the hard ceiling but above the human-approval upper band"
+                    if upper == 3
+                    else "Tier 2: spend sits in the human review band"
+                ),
             )
-        tier: Literal[1, 3] = (
-            3 if ctx.amount_micro > self.tiers.human_approval_upper_micro else 1
-        )
-        return PolicyDecision(action="allow", tier=tier, reason="within policy")
+        return PolicyDecision(action="allow", tier=1, reason="within policy")
 
     def pre_flight(self, ctx: PolicyContext) -> PreFlightReport:
         """Structured dryRun report (Module 4.1) — pure, moves no capital."""

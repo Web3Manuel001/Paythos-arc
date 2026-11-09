@@ -35,5 +35,7 @@ fuzz = { runs = 10_000, max_test_rejects = 1_000_000 }
 invariant = { runs = 10_000, depth = 16, fail_on_revert = false, call_override = false, dictionary_weight = 20 }
 
 [profile.ci]
+# Gate 1 promise honored in CI too: 10k invariant runs (reviewer catch: the
+# default profile's 128-run invariant was the thing CI actually executed).
 fuzz = { runs = 2_000 }
-invariant = { runs = 256, depth = 32 }
+invariant = { runs = 10_000, depth = 32 }

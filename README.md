@@ -8,15 +8,15 @@ Where Circle's Agent Stack (agents.circle.com) provides the rails — the market
 
 ## Status
 
-**Phase 1 — Documentation & Protocol Design.** This repository currently contains the architecture specification suite built from the Paythos Protocol v2.0.0-RFC. Implementation follows the gated sequence in [docs/ROADMAP.md](docs/ROADMAP.md).
+**Status: build in progress — Gates 1–2 complete, live E2E passed on Arc Testnet.** The protocol specification suite (built from the Paythos Protocol v2.0.0-RFC, now extended to PROTOCOL v3 with epoch-bound vouchers) lives in `docs/` and is internal — it is intentionally not distributed in the public repo. Implementation follows the gated sequence in `docs/ROADMAP.md`: the `PaythosVault.sol` invariant suite (Gate 1) and the TypeScript + Python SDK/middleware/MCP/adapter surface (Gate 2) are complete and green, with a live Arc Testnet end-to-end deployment/claim recorded in-tree. What ships publicly is the code; the spec is supplied at deployment time by the team.
 
 | Document | Contents |
 | --- | --- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 5-layer system topology, module-by-module specification |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | x402 v2 semantics, EIP-712 voucher schema, transport rules |
-| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, formal security invariants, attack scenarios |
-| [docs/CIRCLE-INTEGRATION.md](docs/CIRCLE-INTEGRATION.md) | agents.circle.com symbiosis, Discovery API ingestion, grant positioning |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Gate 1→5 implementation sequence with acceptance criteria |
+| `docs/ARCHITECTURE.md` (internal, not distributed) | 5-layer system topology, module-by-module specification |
+| `docs/PROTOCOL.md` (internal) | x402 v2 semantics, EIP-712 voucher schema, transport rules |
+| `docs/SECURITY.md` (internal) | Threat model, formal security invariants, attack scenarios |
+| `docs/CIRCLE-INTEGRATION.md` (internal) | agents.circle.com symbiosis, Discovery API ingestion, grant positioning |
+| `docs/ROADMAP.md` (internal) | Gate 1→5 implementation sequence with acceptance criteria |
 | [AGENTS.md](AGENTS.md) | Repo conventions, toolchain, chain constants |
 
 ## Design in one paragraph

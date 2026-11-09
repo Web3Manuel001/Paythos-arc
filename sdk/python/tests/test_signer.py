@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from paythos import AgentVoucherSigner, SigningDomainArgs, domain_for, format_micro_usd, parse_usd_to_micro
+from paythos import AgentVoucherSigner, PaythosError, SigningDomainArgs, domain_for, format_micro_usd, parse_usd_to_micro
 from paythos.signer import recover_voucher_signer
 
 from conftest import AR_NATIVE_USDC, TEST_MERCHANT, TEST_VAULT, TESTNET, ephemeral_private_key
@@ -14,6 +14,7 @@ def make_signer() -> AgentVoucherSigner:
     return AgentVoucherSigner(
         private_key=ephemeral_private_key(),
         domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
     )
 
 
@@ -71,8 +72,27 @@ def test_micro_usdc_roundtrip() -> None:
     assert format_micro_usd(parse_usd_to_micro("25")) == "25"
 
 
-def test_reset_merchant_clears_ledger() -> None:
+def test_settle_merchant_never_lowers_baseline_below_claimed() -> None:
     signer = make_signer()
     signer.record_and_sign(TEST_MERCHANT, parse_usd_to_micro("0.5"), "0x" + "77" * 32)
-    signer.reset_merchant(TEST_MERCHANT)
-    assert signer.ledger_snapshot() == []
+    signed_total = parse_usd_to_micro("0.5")
+
+    # Settlement below the signed total: ledger stays where it is.
+    signer.settle_merchant(TEST_MERCHANT, parse_usd_to_micro("0.4"))
+    assert signer.ledger_snapshot()[0].cumulative_amount == signed_total
+
+    # Chain ahead of the ledger: adopt the claimed total.
+    signer.settle_merchant(TEST_MERCHANT, parse_usd_to_micro("1.0"))
+    assert signer.ledger_snapshot()[0].cumulative_amount == parse_usd_to_micro("1.0")
+
+    # The NEXT voucher continues monotonically from the pinned baseline.
+    signed = signer.record_and_sign(TEST_MERCHANT, parse_usd_to_micro("0.1"), "0x" + "78" * 32)
+    assert signed.ok
+    assert signed.voucher is not None
+    assert signed.voucher.cumulative_amount == parse_usd_to_micro("1.1")
+
+
+def test_settle_merchant_rejects_negative_claimed() -> None:
+    signer = make_signer()
+    with pytest.raises(PaythosError):
+        signer.settle_merchant(TEST_MERCHANT, -1)

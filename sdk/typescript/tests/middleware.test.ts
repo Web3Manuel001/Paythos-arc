@@ -11,6 +11,7 @@ function pair(priceMicro: bigint, settleToken = AR_USDC) {
   const signer = new AgentVoucherSigner({
     privateKey: ephemeralPrivateKey(),
     domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+    epoch: 1,
   });
   const challenge: PaymentChallenge = {
     x402Version: 2,
@@ -27,7 +28,7 @@ function pair(priceMicro: bigint, settleToken = AR_USDC) {
     network: TESTNET,
     vaultAddress: TEST_VAULT,
     settlementToken: settleToken,
-    authorizedAgents: new Set([signer.agentKey.toLowerCase()]),
+    authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
   });
   return { signer, challenge, prompt, memo, merchant };
 }
@@ -87,7 +88,7 @@ describe("VoucherAccumulator — full membrane", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_USDC,
-      authorizedAgents: new Set(["0x7777777777777777777777777777777777777777"]),
+      authorizedAgents: new Map([["0x7777777777777777777777777777777777777777", 1]]),
     });
     const signed = await signer.recordAndSign(challenge.payTo, parseUsdToMicro("0.10"), memo);
     if (!signed.ok) throw new Error("sign failed");
@@ -110,7 +111,7 @@ describe("VoucherAccumulator — full membrane", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_USDC,
-      authorizedAgents: new Set([signer.agentKey.toLowerCase()]),
+      authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       creditToleranceMicro: parseUsdToMicro("1"),
     });
     const signed = await signer.recordAndSign(challenge.payTo, parseUsdToMicro("2"), memo);
@@ -127,7 +128,7 @@ describe("VoucherAccumulator — full membrane", () => {
       network: TESTNET as const,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_USDC,
-      authorizedAgents: new Set([signer.agentKey.toLowerCase()]),
+      authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       creditToleranceMicro: parseUsdToMicro("10"),
       onFlushReady,
     };

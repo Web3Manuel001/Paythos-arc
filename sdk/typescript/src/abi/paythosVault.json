@@ -167,6 +167,11 @@
             "internalType": "uint256"
           },
           {
+            "name": "epoch",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
             "name": "memo",
             "type": "bytes32",
             "internalType": "bytes32"
@@ -274,6 +279,25 @@
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "epochOf",
+    "inputs": [
+      {
+        "name": "agentKey",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -811,6 +835,11 @@
   },
   {
     "type": "error",
+    "name": "SessionEpochMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "SessionExpired",
     "inputs": []
   },
@@ -844,286 +873,5 @@
     "type": "error",
     "name": "ZeroAddress",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "DailyLimitExceeded",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "DepositUnsupported",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "FeeCapExceeded",
-    "inputs": [
-      {
-        "name": "attempted",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "capInBps",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "ImmutableConfigured",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "InvalidSignature",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "InvalidVoucherAmount",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "MaxPerTxExceeded",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "MemoMismatch",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "NothingToClaim",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "SessionExpired",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "TokenMismatch",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "UnauthorizedAgent",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "UnauthorizedMerchant",
-    "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ZeroAddress",
-    "inputs": []
-  },
-  {
-    "type": "event",
-    "name": "AgentAuthorized",
-    "inputs": [
-      {
-        "name": "agentKey",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "dailyLimit",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxPerTx",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "expiresAt",
-        "type": "uint64",
-        "indexed": false,
-        "internalType": "uint64"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "AgentRevoked",
-    "inputs": [
-      {
-        "name": "agentKey",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "revoker",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "EmergencyWithdrawal",
-    "inputs": [
-      {
-        "name": "owner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "FeeUpdated",
-    "inputs": [
-      {
-        "name": "previousFeeInBps",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "newFeeInBps",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "MerchantAllowed",
-    "inputs": [
-      {
-        "name": "agentKey",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "merchant",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "MerchantBlocked",
-    "inputs": [
-      {
-        "name": "agentKey",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "merchant",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "VaultDeposit",
-    "inputs": [
-      {
-        "name": "owner",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "token",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "amount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "VoucherClaimed",
-    "inputs": [
-      {
-        "name": "agentKey",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "merchant",
-        "type": "address",
-        "indexed": true,
-        "internalType": "address"
-      },
-      {
-        "name": "cumulativeAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "delta",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "feeAmount",
-        "type": "uint256",
-        "indexed": false,
-        "internalType": "uint256"
-      },
-      {
-        "name": "memoHash",
-        "type": "bytes32",
-        "indexed": true,
-        "internalType": "bytes32"
-      }
-    ],
-    "anonymous": false
   }
 ]

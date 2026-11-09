@@ -57,11 +57,13 @@ interface VaultLike {
       token: string;
       cumulativeAmount: bigint;
       validUntil: bigint;
+      epoch: bigint;
       memo: string;
     },
     signature: string,
   ): Promise<ContractTransactionResponse>;
   claimed(agentKey: string, merchant: string): Promise<bigint>;
+  epochOf(agentKey: string): Promise<bigint>;
   spentToday(agentKey: string): Promise<bigint>;
   feeBps(): Promise<bigint>;
 }
@@ -188,6 +190,7 @@ async function main(): Promise<void> {
   const agentSigner = new AgentVoucherSigner({
     privateKey: ephemeralKey,
     domain: { network: NETWORK, vaultAddress },
+    epoch: 1, // placeholder until authorizeAgent; synced from chain below
   });
   const agentKey = agentSigner.agentKey;
   console.log("  agent (derived) :", agentKey);
@@ -200,6 +203,12 @@ async function main(): Promise<void> {
   const authorizeTx = await vault.authorizeAgent(agentKey, policy);
   await authorizeTx.wait();
   console.log("  authorizeAgent  :", authorizeTx.hash);
+
+  // INV-6: vouchers MUST embed the live epoch — read it back after auth
+  // (also correct on reruns where re-authorization bumps the epoch).
+  const liveEpoch = (await vault.epochOf(agentKey)) as bigint;
+  agentSigner.setEpoch(Number(liveEpoch));
+  console.log("  delegation epoch:", liveEpoch.toString(), "(INV-6)");
 
   const allowTx = await vault.allowMerchant(agentKey, merchant);
   await allowTx.wait();
@@ -264,6 +273,7 @@ async function main(): Promise<void> {
       token: signed.voucher.token,
       cumulativeAmount: signed.voucher.cumulativeAmount,
       validUntil: signed.voucher.validUntil,
+      epoch: BigInt(signed.voucher.epoch),
       memo: signed.voucher.memo,
     },
     signed.signature,
@@ -295,6 +305,7 @@ async function main(): Promise<void> {
         token: signed.voucher.token,
         cumulativeAmount: signed.voucher.cumulativeAmount,
         validUntil: signed.voucher.validUntil,
+        epoch: BigInt(signed.voucher.epoch),
         memo: signed.voucher.memo,
       },
       signed.signature,

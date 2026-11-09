@@ -17,7 +17,7 @@ import { AgentVoucherSigner } from "../signer/voucherSigner.js";
 import { PaythosClient, AlwaysApprove, DEFAULT_ALLOWANCE_MICRO } from "../client/paythosClient.js";
 import { PaythosError } from "../core/errors.js";
 import { VaultReader, vaultReaderFor } from "../core/vaultReader.js";
-import { JsonRpcProvider } from "ethers";
+import { JsonRpcProvider, Wallet } from "ethers";
 import { loadDotEnv } from "../config/env.js";
 
 loadDotEnv(); // sdk/typescript/.env when present; exported env vars still win
@@ -109,11 +109,6 @@ const ALLOWLIST = new Set<string>(
     .filter(Boolean),
 );
 
-const signer = new AgentVoucherSigner({
-  privateKey: EPHEMERAL_KEY,
-  domain: { network: NETWORK, vaultAddress: VAULT_ADDRESS },
-});
-
 /**
  * Optional on-chain telemetry (Gate 2.5): set PAYTHOS_RPC_URL + the vault
  * default and `get_agent_budget` reports REAL vault state; absent env keeps
@@ -121,10 +116,52 @@ const signer = new AgentVoucherSigner({
  */
 const RPC_URL = process.env.PAYTHOS_RPC_URL?.trim() || undefined;
 let vaultReader: VaultReader | undefined;
+function reader(): VaultReader {
+  if (!RPC_URL) throw new PaythosError("config_missing", "PAYTHOS_RPC_URL is not set");
+  return (vaultReader ??= vaultReaderFor(new JsonRpcProvider(RPC_URL, undefined, { staticNetwork: true }), VAULT_ADDRESS));
+}
+
+/**
+ * INV-6 epoch resolution (PROTOCOL v3): the live vault epoch is authoritative
+ * when RPC is configured; offline mode requires PAYTHOS_AGENT_EPOCH.
+ * Epoch 0 (never authorized) fails closed — nothing to sign against.
+ */
+async function resolveEpoch(agentAddress: string): Promise<number> {
+  if (RPC_URL) {
+    const live = await reader().epochOf(agentAddress);
+    if (live < 1) {
+      console.error("FAIL CLOSED: agent has no live delegation epoch on-chain (authorize it first)");
+      process.exit(2);
+    }
+    return live;
+  }
+  const envEpoch = Number(process.env.PAYTHOS_AGENT_EPOCH ?? NaN);
+  if (!Number.isInteger(envEpoch) || envEpoch < 1) {
+    console.error("FAIL CLOSED: set PAYTHOS_AGENT_EPOCH (>= 1) or PAYTHOS_RPC_URL (reads epochOf live, INV-6)");
+    process.exit(2);
+  }
+  return envEpoch;
+}
+
+/** Pre-sign epoch sync: rotate only when the chain's epoch actually moved. */
+async function syncEpoch(): Promise<void> {
+  if (!RPC_URL) return;
+  const live = await reader().epochOf(signer.agentKey);
+  if (live !== signer.epoch) signer.setEpoch(live);
+}
+
+const agentAddress = new Wallet(EPHEMERAL_KEY).address;
+const liveEpoch = await resolveEpoch(agentAddress);
+
+const signer = new AgentVoucherSigner({
+  privateKey: EPHEMERAL_KEY,
+  domain: { network: NETWORK, vaultAddress: VAULT_ADDRESS },
+  epoch: liveEpoch,
+});
+
 async function onChainAllowanceMicro(): Promise<bigint> {
   if (!RPC_URL) return DEFAULT_ALLOWANCE_MICRO;
-  vaultReader ??= vaultReaderFor(new JsonRpcProvider(RPC_URL, undefined, { staticNetwork: true }), VAULT_ADDRESS);
-  return vaultReader.remainingAllowance(signer.agentKey);
+  return reader().remainingAllowance(signer.agentKey);
 }
 
 const client = new PaythosClient(signer, {
@@ -216,6 +253,7 @@ async function callTool(name: string | undefined, args: Record<string, unknown>)
         chainedVerified: CHAIN_REGISTRY[NETWORK].verified,
         remainingAllowanceMicro: formatMicroUsd(real ?? DEFAULT_ALLOWANCE_MICRO),
         allowanceSource: real !== undefined ? "on_chain" : "spec_default",
+        epoch: signer.epoch,
         ledger,
         tiers: {
           microAutoExecUsd: "$1.00",
@@ -240,6 +278,7 @@ async function callTool(name: string | undefined, args: Record<string, unknown>)
       if ("needsHuman" in gate && gate.needsHuman) {
         return { error: { code: "human_approval_required", detail: gate.reason } };
       }
+      await syncEpoch(); // INV-6: rotate if the agent was re-authorized since startup
       const signed = await signer.recordAndSign(challenge.payTo, gate.amountMicro, gate.memo);
       if (!signed.ok) return { error: signed.error };
       return {

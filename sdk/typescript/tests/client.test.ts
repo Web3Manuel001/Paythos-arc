@@ -69,6 +69,7 @@ describe("PaythosClient.fetchWithX402", () => {
     const signer = new AgentVoucherSigner({
       privateKey: ephemeralPrivateKey(),
       domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+      epoch: 1,
     });
     const client = new PaythosClient(signer, { signer, network: TESTNET, allowlist: ALLOWLIST });
 
@@ -95,6 +96,7 @@ describe("PaythosClient.fetchWithX402", () => {
     const signer = new AgentVoucherSigner({
       privateKey: ephemeralPrivateKey(),
       domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+      epoch: 1,
     });
     const client = new PaythosClient(signer, { signer, network: TESTNET, allowlist: ALLOWLIST });
 
@@ -116,6 +118,7 @@ describe("PaythosClient.fetchWithX402", () => {
     const signer = new AgentVoucherSigner({
       privateKey: ephemeralPrivateKey(),
       domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+      epoch: 1,
     });
     const blockedBackend = await paidBackend("0.01");
     const client = new PaythosClient(signer, {
@@ -136,6 +139,7 @@ describe("PaythosClient.fetchWithX402", () => {
     const signer = new AgentVoucherSigner({
       privateKey: ephemeralPrivateKey(),
       domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+      epoch: 1,
     });
     const client = new PaythosClient(signer, { signer, network: TESTNET, allowlist: ALLOWLIST });
     const result = await client.fetchWithX402({ url: backend.url, prompt: "expensive" });
@@ -152,6 +156,7 @@ describe("PaythosClient.fetchWithX402", () => {
     const signer = new AgentVoucherSigner({
       privateKey: ephemeralPrivateKey(),
       domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+      epoch: 1,
     });
     const client = new PaythosClient(signer, {
       signer,
@@ -172,6 +177,7 @@ describe("PaythosClient.fetchWithX402", () => {
     const signer = new AgentVoucherSigner({
       privateKey: ephemeralPrivateKey(),
       domain: { network: TESTNET, vaultAddress: TEST_VAULT },
+      epoch: 1,
     });
     const client = new PaythosClient(signer, { signer, network: TESTNET, allowlist: ALLOWLIST });
     const report = client.dryRun(challengeJson("0.50") as never);

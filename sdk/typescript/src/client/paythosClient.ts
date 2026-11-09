@@ -226,13 +226,14 @@ export class PaythosClient {
 }
 
 /** The x402 `PAYMENT-SIGNATURE` envelope is JSON `{ voucher, signature }` (PROTOCOL.md §3). */
-export function serializeVoucher(v: Voucher): Record<string, string> {
+export function serializeVoucher(v: Voucher): Record<string, string | number> {
   return {
     agentKey: v.agentKey,
     merchant: v.merchant,
     token: v.token,
     cumulativeAmount: v.cumulativeAmount.toString(),
     validUntil: v.validUntil.toString(),
+    epoch: v.epoch,
     memo: v.memo,
   };
 }

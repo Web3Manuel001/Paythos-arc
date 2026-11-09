@@ -42,6 +42,8 @@ export interface Voucher {
   token: string;
   cumulativeAmount: bigint;
   validUntil: bigint; // unix seconds
+  /** Delegation epoch the voucher was signed under (PROTOCOL v3, INV-6). */
+  epoch: number;
   memo: string; // bytes32 hex ("0x" + 64 chars)
 }
 

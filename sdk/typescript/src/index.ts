@@ -7,6 +7,7 @@ export * from "./core/errors.js";
 export * from "./core/policyEngine.js";
 export { TokenBucket } from "./core/tokenBucket.js";
 export * from "./core/vaultReader.js";
+export * from "./signer/voucherSigner.js";
 
 export * from "./client/paythosClient.js";
 export * from "./middleware/merchant.js";

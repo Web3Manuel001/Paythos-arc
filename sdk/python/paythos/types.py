@@ -65,6 +65,9 @@ class Voucher(BaseModel):
     token: str
     cumulative_amount: int = Field(ge=0)
     valid_until: int = Field(ge=0)  # unix seconds
+    #: Delegation epoch (INV-6, PROTOCOL v3): binds the voucher to one
+    #: authorizeAgent generation; vault reverts on mismatch.
+    epoch: int = Field(ge=1)
     memo: str  # bytes32 hex ("0x" + 64 chars)
 
 

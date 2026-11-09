@@ -14,13 +14,28 @@ import {
 import { verifyTypedData, type TypedDataDomain } from "ethers";
 import { VOUCHER_TYPES, domainFor } from "../signer/voucherSigner.js";
 
+export interface MerchantChallengeContext {
+  method: string;
+  url: string;
+}
+
 export interface MerchantVerifierConfig {
   network: PaythosNetwork;
   vaultAddress: string; // verifyingContract of the EIP-712 domain
   /** The vault's immutable settlement token (Arc native-USDC precompile). */
   settlementToken: string;
-  /** Addresses whose settlement the vault will honor (allowlist mirror). */
-  authorizedAgents: ReadonlySet<string>;
+  /**
+   * ACTIVE delegation epochs per agentKey (lowercase ⇒ epoch, INV-6).
+   * Voucher signatures bind to the epoch; stale-epoch vouchers are rejected
+   * (fail closed) even when their EIP-712 signature verifies.
+   */
+  authorizedAgents: ReadonlyMap<string, number>;
+  /**
+   * x402 challenge factory (PROTOCOL.md §3.1). Requests WITHOUT payment
+   * headers get a 402 PAYMENT-REQUIRED challenge instead of a free pass —
+   * the middleware GATES (reviewer catch: it passed everything through).
+   */
+  challengeFor?: (ctx: MerchantChallengeContext) => PaymentChallenge;
   /**
    * Merchant credit-line ceiling in micro-USDC (INV-M4, docs default $2.00 /
    * conservative $1.00). Streaming halts at the wall until a flush confirms.
@@ -28,6 +43,8 @@ export interface MerchantVerifierConfig {
   creditToleranceMicro?: bigint;
   /** Value flush threshold in micro-USDC ($5.00 default, docs/PROTOCOL.md §6). */
   flushThresholdMicro?: bigint;
+  /** Age-based flush trigger: unsettled > 0 for ≥ N seconds (2h default). */
+  flushIntervalSeconds?: number;
   /** Flush trigger (INV-M2/M3): highest-voucher flush + idempotent receipts. */
   onFlushReady?: (flush: FlushPlan) => Promise<void>;
 }
@@ -59,6 +76,8 @@ export class VoucherAccumulator {
   readonly #highest = new Map<string, VoucherRecord>();
   /** Settled cumulative per agent — the daemon reports it post-confirmation. */
   readonly #settled = new Map<string, bigint>();
+  /** Last activity per agent (voucher accepted or settlement confirmed). */
+  readonly #lastActivityAt = new Map<string, number>();
   #domain: TypedDataDomain;
 
   constructor(protected readonly cfg: MerchantVerifierConfig) {
@@ -82,26 +101,55 @@ export class VoucherAccumulator {
    * Verify an inbound voucher in memory. <5ms budget, no chain call (INV-M1).
    * Accumulates strictly-increasing vouchers only. Batches POST /flush plan.
    */
+  /**
+   * Verify an inbound voucher in memory. <5ms budget, no chain call (INV-M1).
+   * Accepts BOTH wire formats (reviewer catch: they were disjoint):
+   *   - x402 v2 `PAYMENT-SIGNATURE` JSON envelope `{ voucher, signature }`
+   *   - native `-paythos-voucher` (base64 JSON) + `-paythos-signature` pair
+   * Accumulates strictly-increasing vouchers only. Batches POST /flush plan.
+   */
   verifyPayment(headers: Headers | Record<string, string>): VerifyOutcome {
     const h = toHeaders(headers);
-    const voucherB64 = h.get(X_PAYTHOS_VOUCHER_HEADER);
-    const sig = h.get(X_PAYTHOS_SIGNATURE_HEADER);
-    if (!voucherB64 || !sig) return fail(402, "missing Paythos payment headers");
+    const envelope = h.get("payment-signature");
+    let voucher: Voucher | undefined;
+    let signature: string | undefined;
 
-    const voucher = decodeVoucher(voucherB64);
-    if (!voucher) return fail(402, "PAYTHOS voucher undecodable");
+    if (envelope !== null) {
+      // x402 v2 envelope (PROTOCOL.md §3): JSON `{ voucher, signature }`.
+      const x402 = decodePaymentSignature(envelope);
+      if (!x402) return fail(402, "PAYMENT-SIGNATURE envelope undecodable");
+      voucher = x402.voucher;
+      signature = x402.signature;
+    } else {
+      const voucherB64 = h.get(X_PAYTHOS_VOUCHER_HEADER);
+      signature = h.get(X_PAYTHOS_SIGNATURE_HEADER) ?? undefined;
+      if (!voucherB64 || !signature) return fail(402, "missing Paythos payment headers");
+      voucher = decodeVoucher(voucherB64);
+      if (!voucher) return fail(402, "PAYTHOS voucher undecodable");
+    }
+    return this.#verifyCore(voucher, signature);
+  }
 
+  /** Shared verification pipeline used by both wire formats. */
+  #verifyCore(voucher: Voucher, signature: string): VerifyOutcome {
     if (voucher.token !== this.cfg.settlementToken) {
       return fail(402, "voucher token is not the configured settlement token");
     }
-    if (this.cfg.authorizedAgents.has(voucher.agentKey.toLowerCase()) === false) {
+    const lowerKey = voucher.agentKey.toLowerCase();
+    const authorizedEpoch = this.cfg.authorizedAgents.get(lowerKey);
+    if (authorizedEpoch === undefined) {
       return fail(402, "unknown agentKey — no session authorization on record");
+    }
+    // INV-6: a voucher signed under a dead delegation epoch never settles
+    // here, even though its EIP-712 signature verifies perfectly.
+    if (voucher.epoch !== authorizedEpoch) {
+      return fail(402, "voucher epoch does not match the agent's active delegation (INV-6)");
     }
 
     // <5ms: recover signer in memory (no RPC — INV-M1).
     let recovered: string;
     try {
-      recovered = verifyTypedData(this.#domain, VOUCHER_TYPES, stringify(voucher), sig).toLowerCase();
+      recovered = verifyTypedData(this.#domain, VOUCHER_TYPES, stringify(voucher), signature).toLowerCase();
     } catch {
       return fail(402, "voucher signature did not recover against the vault domain");
     }
@@ -109,7 +157,7 @@ export class VoucherAccumulator {
     if (Number(voucher.validUntil) * 1000 < Date.now()) {
       return fail(402, "voucher expired");
     }
-    if (recovered !== voucher.agentKey.toLowerCase()) {
+    if (recovered !== lowerKey) {
       return fail(402, "signature was NOT signed by voucher.agentKey (INV bound)");
     }
 
@@ -131,12 +179,16 @@ export class VoucherAccumulator {
         unsettledMicro: this.unsettledFor(recovered),
       };
     }
-    this.#highest.set(recovered, { voucher, signature: sig });
+    this.#highest.set(recovered, { voucher, signature });
     const unsettled = this.unsettledFor(recovered);
 
     // The 402→200 path also ANCHORS the flush trigger (INV-M2/M3).
+    // Evaluated BEFORE the activity stamp resets: byTime must measure the
+    // idle window that just elapsed — stamping first made the age trigger
+    // mathematically unreachable (reviewer catch on flush triggers).
     const flushed = this.maybeFlush(recovered);
     void flushed;
+    this.#lastActivityAt.set(recovered, Math.floor(Date.now() / 1000));
 
     return {
       ok: true,
@@ -167,21 +219,33 @@ export class VoucherAccumulator {
     const key = agentKey.toLowerCase();
     const current = this.#settled.get(key) ?? 0n;
     if (cumulativeSettled > current) this.#settled.set(key, cumulativeSettled);
+    this.#lastActivityAt.set(key, Math.floor(Date.now() / 1000));
   }
 
   /**
    * Production closure: flush daemon policy.
    * Triggers `onFlushReady` when the FIRST of:
-   *   (value): unsettled ≥ flushThresholdMicro ($5.00 default) OR
-   *   (time):  the earliest unclaimed voucher age ≥ flushIntervalSeconds (2h)
-   * Returns whether a flush was queued. Never throws.
+   *   (value): unsettled ≥ effective flush threshold, OR
+   *   (time):  unsettled > 0 and age ≥ flushIntervalSeconds (2h default)
+   * Effective threshold = min(flushThresholdMicro, credit wall − 1¢): the
+   * default $5 flush threshold is ABOVE the default $2 credit wall, which
+   * made flushes unreachable on defaults (reviewer catch) — the flush MUST
+   * fire before the wall trips. Never throws.
    */
   maybeFlush(agentKey: string): boolean {
     const record = this.#highest.get(agentKey);
-    const flushThresholdMicro = this.cfg.flushThresholdMicro ?? 5_000_000n;
     if (record === undefined) return false;
-    if (this.unsettledFor(agentKey) < flushThresholdMicro) return false;
     if (!this.cfg.onFlushReady) return false;
+    const tolerance = this.cfg.creditToleranceMicro ?? 2_000_000n;
+    const configured = this.cfg.flushThresholdMicro ?? 5_000_000n;
+    const effectiveThreshold = configured < tolerance ? configured : tolerance > 1n ? tolerance - 1n : tolerance;
+    const unsettled = this.unsettledFor(agentKey);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const lastActivity = this.#lastActivityAt.get(agentKey) ?? nowSeconds;
+    const interval = this.cfg.flushIntervalSeconds ?? 7_200;
+    const byValue = unsettled >= effectiveThreshold;
+    const byTime = unsettled > 0n && nowSeconds - lastActivity >= interval;
+    if (!byValue && !byTime) return false;
     void this.cfg.onFlushReady({
       agentKey,
       merchant: record.voucher.merchant,
@@ -217,13 +281,43 @@ function decodeVoucher(b64: string): Voucher | undefined {
   try {
     const json = JSON.parse(Buffer.from(b64, "base64").toString("utf8")) as Record<string, unknown>;
     if (typeof json.agentKey !== "string" || typeof json.merchant !== "string") return undefined;
+    const epoch = typeof json.epoch === "number" ? json.epoch : Number(json.epoch ?? NaN);
+    if (!Number.isInteger(epoch)) return undefined;
     return {
       agentKey: json.agentKey as string,
       merchant: json.merchant as string,
       token: json.token as string,
       cumulativeAmount: BigInt(json.cumulativeAmount as string),
       validUntil: BigInt(json.validUntil as string),
+      epoch,
       memo: json.memo as string,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** x402 v2 `PAYMENT-SIGNATURE` wire: plain JSON `{ voucher: {...}, signature }`. */
+function decodePaymentSignature(raw: string): { voucher: Voucher; signature: string } | undefined {
+  try {
+    const json = JSON.parse(raw) as Record<string, unknown>;
+    const voucherJson = json.voucher as Record<string, unknown> | undefined;
+    const signature = json.signature;
+    if (typeof voucherJson !== "object" || typeof signature !== "string") return undefined;
+    if (typeof voucherJson.agentKey !== "string" || typeof voucherJson.merchant !== "string") return undefined;
+    const epoch = Number(voucherJson.epoch ?? NaN);
+    if (!Number.isInteger(epoch)) return undefined;
+    return {
+      voucher: {
+        agentKey: voucherJson.agentKey as string,
+        merchant: voucherJson.merchant as string,
+        token: voucherJson.token as string,
+        cumulativeAmount: BigInt(voucherJson.cumulativeAmount as string),
+        validUntil: BigInt(voucherJson.validUntil as string),
+        epoch,
+        memo: voucherJson.memo as string,
+      },
+      signature,
     };
   } catch {
     return undefined;
@@ -237,6 +331,7 @@ function stringify(v: Voucher) {
     token: v.token,
     cumulativeAmount: v.cumulativeAmount,
     validUntil: v.validUntil,
+    epoch: v.epoch,
     memo: v.memo,
   };
 }
