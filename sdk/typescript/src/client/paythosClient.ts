@@ -12,11 +12,15 @@ import {
   PreFlightReport,
   Voucher,
   formatMicroUsd,
+  parseUsdToMicro,
+  X_PAYTHOS_STREAM_HEADER,
 } from "../types.js";
 import { AgentVoucherSigner } from "../signer/voucherSigner.js";
 import { GoferPolicyEngine, TierThresholds } from "../core/policyEngine.js";
 import { TokenBucket } from "../core/tokenBucket.js";
 import { PaythosError } from "../core/errors.js";
+import { HoldLedger } from "./holdLedger.js";
+import { MeteringReport, parseMeteringReport, recoverMeteringSigner } from "./metering.js";
 
 export interface TransactabilityOracle {
   /** Counterparty risk verdict (Module 4.2). Real store lands Gate 3. */
@@ -67,6 +71,37 @@ export type ExecutedResult =
   | { ok: true; data: Response; voucher?: Voucher }
   | { ok: false; error: PolicyEvaluatedFailure; status?: number };
 
+/** Result of a YOPO streaming run (INV-M5, docs/PROTOCOL.md §4.2). */
+export type StreamedResult =
+  | {
+      ok: true;
+      /** Reassembled stream body (settled variant includes the metering trailer). */
+      data: Response | string;
+      /** Settlement voucher — absent on free endpoints. */
+      voucher?: Voucher;
+      streamId?: string;
+      consumedUsd?: string;
+      consumedMicro?: bigint;
+    }
+  | {
+      ok: false;
+      error: PolicyEvaluatedFailure;
+      /** Hold lifecycle at failure time: nothing locked / released unpaid / settled-but-unconfirmed. */
+      holdState: "unset" | "released" | "settled";
+      status?: number;
+    };
+
+export interface StreamHooks {
+  /** Observe chunks as they land (progressive UI). */
+  onChunk?: (delta: string, accumulated: string) => void;
+  /**
+   * Custom metering extraction. Default: the LAST line of the body is the
+   * metering JSON (optionally wrapped as `{ "metering": {...} }`) —
+   * docs/PROTOCOL.md §4.2 terminal frame.
+   */
+  extractMetering?: (response: Response, fullText: string) => MeteringReport | undefined;
+}
+
 export type GateDecision =
   | { ok: true; memo: string; amountMicro: bigint; needsHuman?: false }
   | { ok: true; needsHuman: true; reason: string; memo: string; amountMicro: bigint }
@@ -85,6 +120,7 @@ export interface RequestAttempt {
 export class PaythosClient {
   readonly #gofer: GoferPolicyEngine;
   readonly #bucket: TokenBucket;
+  readonly #holds = new HoldLedger();
   #allowanceMicro: bigint;
 
   constructor(
@@ -94,6 +130,11 @@ export class PaythosClient {
     this.#gofer = new GoferPolicyEngine(options.tiers);
     this.#bucket = new TokenBucket(options.rateLimit ?? { capacity: 100, refillPerSecond: 10 });
     this.#allowanceMicro = options.allowanceMicro ?? DEFAULT_ALLOWANCE_MICRO;
+  }
+
+  /** Active `upto` hold ledger (YOPO ceiling locks, never vouchers). */
+  get holds(): HoldLedger {
+    return this.#holds;
   }
 
   /**
@@ -164,6 +205,235 @@ export class PaythosClient {
   }
 
   /**
+   * YOPO streaming for `scheme: "upto"` challenges (docs/PROTOCOL.md §4.2,
+   * INV-M5). Lifecycle, in order:
+   *   1. 402 round-trip — challenge declares the OUTCOME CEILING (`max`).
+   *   2. GOFER gate against the ceiling, tier-2 human review when signalled.
+   *   3. HOLD: the ceiling is LOCKED internally — never a voucher. Holds
+   *      count against the rolling budget until settle/release.
+   *   4. The stream opens; chunks flow WITHOUT any payment proof.
+   *   5. Terminal frame = scewer-attested MeteringReport; signature must
+   *      recover to `payTo`; consumed must parse and stay ≤ ceiling.
+   *   6. ONLY THEN does the client sign the EXACT cumulative voucher
+   *      (previousTotal + consumed) and POST the completion call.
+   *   Failure/break/bad attestation at ANY point ⇒ hold released, no
+   *   voucher, nothing owed (YOPO: unrendered tokens are never signed).
+   */
+  async streamWithX402(attempt: RequestAttempt, hooks: StreamHooks = {}): Promise<StreamedResult> {
+    const prompt = attempt.prompt ?? attempt.url;
+    const first = await this.rawFetchBuilder(attempt);
+    if (first.status !== 402) {
+      if (first.ok) return { ok: true, data: first }; // free endpoint — nothing to hold or sign
+      return { ok: false, error: { code: "network_error", detail: `upstream ${first.status}` }, holdState: "unset" };
+    }
+
+    const challenge = decodeChallenge(first);
+    if (challenge.scheme !== "upto") {
+      return {
+        ok: false,
+        error: {
+          code: "policy_ambiguous",
+          detail: `streamWithX402 requires scheme "upto" (got "${challenge.scheme}") — use fetchWithX402 for exact`,
+        },
+        holdState: "unset",
+      };
+    }
+
+    await this.refreshAllowance();
+    const ceiling = parseMaxMicro(challenge);
+    const free = this.#allowanceMicro > this.#holds.activeHoldMicro()
+      ? this.#allowanceMicro - this.#holds.activeHoldMicro()
+      : 0n;
+    if (free < ceiling) {
+      return {
+        ok: false,
+        error: {
+          code: "policy_failure",
+          detail: `insufficient allowance for the ${formatMicroUsd(ceiling)} upto hold — ${formatMicroUsd(free)} free`,
+        },
+        holdState: "unset",
+      };
+    }
+
+    const gate = this.gate(challenge, prompt);
+    if (!gate.ok) return { ok: false, error: gate.error, holdState: "unset" };
+    if (gate.needsHuman) {
+      const approved = await this.confirmTier2({
+        amountUsd: formatMicroUsd(gate.amountMicro),
+        merchant: challenge.payTo,
+        memo: gate.memo,
+      });
+      if (!approved) {
+        return { ok: false, error: humanApprovalFailure(gate.reason), holdState: "unset" };
+      }
+    }
+
+    // ---- HOLD (internal lock — the ceiling is NEVER signed here) ----
+    const streamId = HoldLedger.streamIdFor(attempt.url, prompt, Date.now());
+    this.#holds.lock(streamId, challenge.payTo, ceiling);
+
+    // ---- 4. open the stream UNPAID ----
+    let stream: Response;
+    try {
+      stream = await this.rawFetchBuilder(attempt);
+    } catch (err) {
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: { code: "network_error", detail: `stream open failed: ${String(err)}` },
+        holdState: "released",
+      };
+    }
+    if (!stream.ok || !stream.body) {
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: { code: "network_error", detail: `stream refused: HTTP ${stream.status}` },
+        holdState: "released",
+      };
+    }
+
+    let fullText = "";
+    try {
+      const reader = stream.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const delta = decoder.decode(value, { stream: true });
+        fullText += delta;
+        try {
+          hooks.onChunk?.(delta, fullText);
+        } catch {
+          /* observer errors MUST NOT kill the stream (progress UI is best-effort) */
+        }
+      }
+    } catch (err) {
+      // ---- YOPO: connection broke mid-stream ⇒ hold released, no voucher ----
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: { code: "network_error", detail: `stream broke before completion: ${String(err)}` },
+        holdState: "released",
+      };
+    }
+
+    // ---- 5. metering proof (attested, ≤ ceiling, recovering to payTo) ----
+    let report = hooks.extractMetering
+      ? hooks.extractMetering(stream, fullText)
+      : defaultExtractMetering(stream, fullText);
+    if (report === undefined) {
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: { code: "policy_ambiguous", detail: "no metering report on the terminal frame — hold released unpaid (YOPO)" },
+        holdState: "released",
+      };
+    }
+    let recovered: string;
+    try {
+      recovered = recoverMeteringSigner(report);
+    } catch (err) {
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: {
+          code: "policy_ambiguous",
+          detail: `metering attestation malformed: ${String(err)}`,
+        },
+        holdState: "released",
+      };
+    }
+    if (recovered !== challenge.payTo.toLowerCase()) {
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: {
+          code: "policy_ambiguous",
+          detail: "metering attestation did NOT recover to the payTo destination",
+        },
+        holdState: "released",
+      };
+    }
+    let consumedMicro: bigint;
+    try {
+      consumedMicro = parseUsdToMicro(report.consumed);
+    } catch {
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: { code: "policy_ambiguous", detail: `unparseable consumed amount: "${report.consumed}"` },
+        holdState: "released",
+      };
+    }
+    if (consumedMicro > ceiling) {
+      this.#holds.release(streamId);
+      return {
+        ok: false,
+        error: {
+          code: "policy_failure",
+          detail: `metered ${formatMicroUsd(consumedMicro)} exceeds the ${formatMicroUsd(ceiling)} ceiling`,
+        },
+        holdState: "released",
+      };
+    }
+    try {
+      this.#holds.settle(streamId, consumedMicro);
+    } catch (err) {
+      // settle() releases the hold itself on zero/over-ceiling consumed —
+      // nothing owed, nothing signed (YOPO zero-render ⇒ unpaid).
+      return {
+        ok: false,
+        error: { code: "policy_failure", detail: `hold settlement refused: ${String(err)}` },
+        holdState: "released",
+      };
+    }
+
+    // ---- 6. sign EXACT consumption + POST the completion call ----
+    const signed = await this.signer.recordAndSign(challenge.payTo, consumedMicro, gate.memo);
+    if (!signed.ok) {
+      // Ledger refused (replay/limit) — hold consumed but unpaid: fail closed.
+      return {
+        ok: false,
+        error: { code: "policy_failure", detail: `settlement refused: ${signed.error.detail}` },
+        holdState: "settled",
+      };
+    }
+    const completion: RequestAttempt = {
+      url: attempt.url,
+      method: attempt.method ?? "POST",
+      prompt,
+      body: JSON.stringify({ streamId }),
+      headers: { [X_PAYTHOS_STREAM_HEADER]: streamId },
+    };
+    const retry = await this.rawFetchBuilder(completion, signed.voucher, signed.signature);
+    if (retry.status === 402) {
+      return {
+        ok: false,
+        error: { code: "invalid_voucher", detail: "completion payment rejected" },
+        status: 402,
+        holdState: "settled",
+      };
+    }
+    if (retry.ok) {
+      return {
+        ok: true,
+        streamId,
+        consumedUsd: formatMicroUsd(consumedMicro),
+        consumedMicro,
+        voucher: signed.voucher,
+        data: fullText,
+      };
+    }
+    return {
+      ok: false,
+      error: { code: "network_error", detail: `upstream ${retry.status} on completion` },
+      status: retry.status,
+      holdState: "settled",
+    };
+  }
+
+  /**
    * Policy gate. GOFER evaluation is sync and cheap; tier-2 signalling
    * is returned to the CALLER so the async human review (chat/webhook) can run.
    */
@@ -188,7 +458,11 @@ export class PaythosClient {
   protected contextFor(challenge: PaymentChallenge) {
     return {
       amountMicro: parseMaxMicro(challenge),
-      remainingAllowanceMicro: this.#allowanceMicro,
+      // ACTIVE `upto` holds run against the same rolling budget until they
+      // settle or release (YOPO ceiling = reserved headroom, not spend).
+      remainingAllowanceMicro: this.#allowanceMicro > this.#holds.activeHoldMicro()
+        ? this.#allowanceMicro - this.#holds.activeHoldMicro()
+        : 0n,
       merchant: challenge.payTo,
       allowlist: this.options.allowlist,
       counterpartyApproved: this.transactabilityApprove(challenge.payTo),
@@ -236,6 +510,19 @@ export function serializeVoucher(v: Voucher): Record<string, string | number> {
     epoch: v.epoch,
     memo: v.memo,
   };
+}
+
+/**
+ * Default §4.2 metering extraction: the LAST non-empty line of the body is
+ * the metering JSON (plain or wrapped `{ "metering": {...} }`).
+ */
+export function defaultExtractMetering(_response: Response, fullText: string): MeteringReport | undefined {
+  const lines = fullText.split("\n").filter((l) => l.trim().length > 0);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const report = parseMeteringReport(lines[i]!);
+    if (report !== undefined) return report;
+  }
+  return undefined;
 }
 
 export function humanApprovalFailure(reason: string): PolicyEvaluatedFailure {

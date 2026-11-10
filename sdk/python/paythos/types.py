@@ -26,6 +26,7 @@ PAYMENT_REQUIRED_HEADER = "payment-required"
 PAYMENT_SIGNATURE_HEADER = "payment-signature"
 X_PAYTHOS_VOUCHER_HEADER = "x-paythos-voucher"
 X_PAYTHOS_SIGNATURE_HEADER = "x-paythos-signature"
+X_PAYTHOS_STREAM_HEADER = "x-paythos-stream"
 
 
 class ChainRegistryEntry(BaseModel):

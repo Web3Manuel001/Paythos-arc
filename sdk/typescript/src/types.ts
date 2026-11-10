@@ -73,6 +73,8 @@ export const PAYMENT_REQUIRED_HEADER = "payment-required";
 export const PAYMENT_SIGNATURE_HEADER = "payment-signature";
 export const X_PAYTHOS_VOUCHER_HEADER = "x-paythos-voucher";
 export const X_PAYTHOS_SIGNATURE_HEADER = "x-paythos-signature";
+/** Stream-completion call marker (docs/PROTOCOL.md §4.2). */
+export const X_PAYTHOS_STREAM_HEADER = "x-paythos-stream";
 
 export type PaymentSchemeResult =
   | { ok: true; voucher: Voucher; signature: string }
