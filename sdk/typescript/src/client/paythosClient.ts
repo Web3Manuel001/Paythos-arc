@@ -21,9 +21,10 @@ import { TokenBucket } from "../core/tokenBucket.js";
 import { PaythosError } from "../core/errors.js";
 import { HoldLedger } from "./holdLedger.js";
 import { MeteringReport, parseMeteringReport, recoverMeteringSigner } from "./metering.js";
+import { isTransactabilityIndex, MerchantObservation } from "./transactability.js";
 
 export interface TransactabilityOracle {
-  /** Counterparty risk verdict (Module 4.2). Real store lands Gate 3. */
+  /** Counterparty risk verdict (Module 4.2). Implemented by TransactabilityIndex. */
   approve(merchant: string): boolean;
 }
 
@@ -191,6 +192,7 @@ export class PaythosClient {
     const signed = await this.signer.recordAndSign(challenge.payTo, gate.amountMicro, gate.memo);
     if (!signed.ok) return { ok: false, error: { code: "policy_failure", detail: signed.error.detail } };
 
+    const retriedAt = Date.now();
     const retry = await this.rawFetchBuilder(attempt, signed.voucher, signed.signature);
     if (retry.status === 402) {
       // Merchant rejected the proof (epoch mismatch/stale accumulator state).
@@ -200,7 +202,16 @@ export class PaythosClient {
         status: 402,
       };
     }
-    if (retry.ok) return { ok: true, data: retry, voucher: signed.voucher };
+    if (retry.ok) {
+      this.#observe(challenge.payTo, { ok: true, latencyMs: Date.now() - retriedAt, status: retry.status });
+      return { ok: true, data: retry, voucher: signed.voucher };
+    }
+    this.#observe(challenge.payTo, {
+      ok: false,
+      latencyMs: Date.now() - retriedAt,
+      status: retry.status,
+      valid: false,
+    });
     return networkFail(retry.status);
   }
 
@@ -273,11 +284,13 @@ export class PaythosClient {
     this.#holds.lock(streamId, challenge.payTo, ceiling);
 
     // ---- 4. open the stream UNPAID ----
+    const streamStartedAt = Date.now();
     let stream: Response;
     try {
       stream = await this.rawFetchBuilder(attempt);
     } catch (err) {
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: false, latencyMs: Date.now() - streamStartedAt, valid: false });
       return {
         ok: false,
         error: { code: "network_error", detail: `stream open failed: ${String(err)}` },
@@ -286,6 +299,12 @@ export class PaythosClient {
     }
     if (!stream.ok || !stream.body) {
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, {
+        ok: false,
+        latencyMs: Date.now() - streamStartedAt,
+        status: stream.status,
+        valid: false,
+      });
       return {
         ok: false,
         error: { code: "network_error", detail: `stream refused: HTTP ${stream.status}` },
@@ -311,6 +330,7 @@ export class PaythosClient {
     } catch (err) {
       // ---- YOPO: connection broke mid-stream ⇒ hold released, no voucher ----
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: false, latencyMs: Date.now() - streamStartedAt, valid: false });
       return {
         ok: false,
         error: { code: "network_error", detail: `stream broke before completion: ${String(err)}` },
@@ -324,6 +344,7 @@ export class PaythosClient {
       : defaultExtractMetering(stream, fullText);
     if (report === undefined) {
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: true, latencyMs: Date.now() - streamStartedAt, valid: false });
       return {
         ok: false,
         error: { code: "policy_ambiguous", detail: "no metering report on the terminal frame — hold released unpaid (YOPO)" },
@@ -335,6 +356,7 @@ export class PaythosClient {
       recovered = recoverMeteringSigner(report);
     } catch (err) {
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: true, latencyMs: Date.now() - streamStartedAt, valid: false });
       return {
         ok: false,
         error: {
@@ -346,6 +368,7 @@ export class PaythosClient {
     }
     if (recovered !== challenge.payTo.toLowerCase()) {
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: true, latencyMs: Date.now() - streamStartedAt, valid: false });
       return {
         ok: false,
         error: {
@@ -360,6 +383,7 @@ export class PaythosClient {
       consumedMicro = parseUsdToMicro(report.consumed);
     } catch {
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: true, latencyMs: Date.now() - streamStartedAt, valid: false });
       return {
         ok: false,
         error: { code: "policy_ambiguous", detail: `unparseable consumed amount: "${report.consumed}"` },
@@ -368,6 +392,7 @@ export class PaythosClient {
     }
     if (consumedMicro > ceiling) {
       this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: true, latencyMs: Date.now() - streamStartedAt, valid: false });
       return {
         ok: false,
         error: {
@@ -408,6 +433,12 @@ export class PaythosClient {
     };
     const retry = await this.rawFetchBuilder(completion, signed.voucher, signed.signature);
     if (retry.status === 402) {
+      this.#observe(challenge.payTo, {
+        ok: false,
+        latencyMs: Date.now() - streamStartedAt,
+        status: 402,
+        valid: false,
+      });
       return {
         ok: false,
         error: { code: "invalid_voucher", detail: "completion payment rejected" },
@@ -416,6 +447,12 @@ export class PaythosClient {
       };
     }
     if (retry.ok) {
+      this.#observe(challenge.payTo, {
+        ok: true,
+        latencyMs: Date.now() - streamStartedAt,
+        status: retry.status,
+        valid: true,
+      });
       return {
         ok: true,
         streamId,
@@ -425,6 +462,12 @@ export class PaythosClient {
         data: fullText,
       };
     }
+    this.#observe(challenge.payTo, {
+      ok: false,
+      latencyMs: Date.now() - streamStartedAt,
+      status: retry.status,
+      valid: true,
+    });
     return {
       ok: false,
       error: { code: "network_error", detail: `upstream ${retry.status} on completion` },
@@ -472,6 +515,17 @@ export class PaythosClient {
   protected transactabilityApprove(merchant: string): boolean {
     const oracle = this.options.transactability ?? AlwaysApprove;
     return oracle.approve(merchant);
+  }
+
+  /** Feed measured service quality into a TransactabilityIndex (best-effort). */
+  #observe(merchant: string, observation: Omit<MerchantObservation, "at">): void {
+    const oracle = this.options.transactability;
+    if (!isTransactabilityIndex(oracle)) return;
+    try {
+      oracle.record(merchant, observation);
+    } catch {
+      /* health telemetry must never break a spend path */
+    }
   }
 
   /** Tier-2 path: awaited cryptographic review (human chat/webhook/dashboard). */

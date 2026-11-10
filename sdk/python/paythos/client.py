@@ -21,6 +21,7 @@ from .metering import MeteringReport, parse_metering_report, recover_metering_si
 from .policy_engine import GoferPolicyEngine, PolicyContext, TierThresholds
 from .rate_limit import TokenBucket
 from .signer import AgentVoucherSigner
+from .transactability import MerchantObservation, is_transactability_index
 from .types import (
     PAYMENT_SIGNATURE_HEADER,
     PaymentChallenge,
@@ -109,6 +110,7 @@ class PaythosClient:
         self.holds = HoldLedger()
         self._gofer = GoferPolicyEngine(tiers or TierThresholds())
         self._transactability = transactability or (lambda _merchant: True)
+        self._transactability_oracle = transactability
         self._bucket = TokenBucket(capacity=rate_limit[0], refill_per_second=rate_limit[1])
         self._human_gate = approve_with_human
         self._allowance_micro = allowance_micro
@@ -199,6 +201,7 @@ class PaythosClient:
                 "signature": signed.signature,
             }
         )
+        retried_at = time.time()
         retry = await self._raw_fetch(
             RequestAttempt(
                 url=attempt.url,
@@ -217,7 +220,22 @@ class PaythosClient:
                 ),
             )
         if retry.is_success:
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(
+                    ok=True, latency_ms=_elapsed_ms(retried_at), status=retry.status_code
+                ),
+            )
             return ExecutedResult(ok=True, response=retry, voucher=signed.voucher)
+        self._observe(
+            challenge.pay_to,
+            MerchantObservation(
+                ok=False,
+                latency_ms=_elapsed_ms(retried_at),
+                status=retry.status_code,
+                valid=False,
+            ),
+        )
         return ExecutedResult(
             ok=False,
             status=retry.status_code,
@@ -249,6 +267,16 @@ class PaythosClient:
             )
         except httpx.HTTPError as exc:
             raise PaythosError("network_error", f"fetch failed: {exc}") from exc
+
+    def _observe(self, merchant: str, observation: MerchantObservation) -> None:
+        """Feed measured service quality into a TransactabilityIndex (best-effort)."""
+        oracle = self._transactability_oracle
+        if not is_transactability_index(oracle):
+            return
+        try:
+            oracle.record(merchant, observation)  # type: ignore[union-attr]
+        except Exception:
+            pass  # health telemetry must never break a spend path
 
     async def stream_with_x402(
         self,
@@ -314,6 +342,7 @@ class PaythosClient:
         self.holds.lock(stream_id, challenge.pay_to, ceiling)
 
         # ---- open the stream UNPAID ----
+        stream_started_at = time.time()
         request = self._http.build_request(
             attempt.method or "GET",
             attempt.url,
@@ -324,6 +353,10 @@ class PaythosClient:
             stream = await self._http.send(request, stream=True)
         except httpx.HTTPError as exc:
             self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=False, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(code="network_error", detail=f"stream open failed: {exc}"),
@@ -332,6 +365,15 @@ class PaythosClient:
         if stream.status_code >= 400:
             self.holds.release(stream_id)
             await stream.aclose()
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(
+                    ok=False,
+                    latency_ms=_elapsed_ms(stream_started_at),
+                    status=stream.status_code,
+                    valid=False,
+                ),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(code="network_error", detail=f"stream refused: HTTP {stream.status_code}"),
@@ -352,6 +394,10 @@ class PaythosClient:
             # ---- YOPO: connection broke mid-stream ⇒ hold released, no voucher ----
             await stream.aclose()
             self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=False, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(code="network_error", detail=f"stream broke before completion: {exc}"),
@@ -367,6 +413,10 @@ class PaythosClient:
             report = default_extract_metering(full_text)
         if report is None:
             self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=True, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(
@@ -379,6 +429,10 @@ class PaythosClient:
             recovered = recover_metering_signer(report)
         except PaythosError as exc:
             self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=True, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(code="policy_ambiguous", detail=f"metering attestation malformed: {exc}"),
@@ -386,6 +440,10 @@ class PaythosClient:
             )
         if recovered != challenge.pay_to.lower():
             self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=True, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(
@@ -398,6 +456,10 @@ class PaythosClient:
             consumed_micro = parse_usd_to_micro(report.consumed)
         except ValueError:
             self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=True, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(code="policy_ambiguous", detail=f'unparseable consumed amount: "{report.consumed}"'),
@@ -405,6 +467,10 @@ class PaythosClient:
             )
         if consumed_micro > ceiling:
             self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=True, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
             return StreamedResult(
                 ok=False,
                 error=PolicyEvaluatedFailure(
@@ -450,6 +516,15 @@ class PaythosClient:
         )
         retry = await self._raw_fetch(completion)
         if retry.status_code == 402:
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(
+                    ok=False,
+                    latency_ms=_elapsed_ms(stream_started_at),
+                    status=402,
+                    valid=False,
+                ),
+            )
             return StreamedResult(
                 ok=False,
                 status=402,
@@ -457,6 +532,15 @@ class PaythosClient:
                 hold_state="settled",
             )
         if retry.is_success:
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(
+                    ok=True,
+                    latency_ms=_elapsed_ms(stream_started_at),
+                    status=retry.status_code,
+                    valid=True,
+                ),
+            )
             return StreamedResult(
                 ok=True,
                 data=full_text,
@@ -466,6 +550,15 @@ class PaythosClient:
                 voucher=signed.voucher,
                 hold_state="settled",
             )
+        self._observe(
+            challenge.pay_to,
+            MerchantObservation(
+                ok=False,
+                latency_ms=_elapsed_ms(stream_started_at),
+                status=retry.status_code,
+                valid=False,
+            ),
+        )
         return StreamedResult(
             ok=False,
             status=retry.status_code,
@@ -475,6 +568,10 @@ class PaythosClient:
 
     async def aclose(self) -> None:
         await self._http.aclose()
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.time() - started_at) * 1000)
 
 
 def serialize_voucher(voucher: object) -> dict[str, str]:

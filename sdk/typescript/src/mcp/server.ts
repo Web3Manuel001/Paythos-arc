@@ -14,7 +14,8 @@ import {
   formatMicroUsd,
 } from "../types.js";
 import { AgentVoucherSigner } from "../signer/voucherSigner.js";
-import { PaythosClient, AlwaysApprove, DEFAULT_ALLOWANCE_MICRO } from "../client/paythosClient.js";
+import { PaythosClient, DEFAULT_ALLOWANCE_MICRO } from "../client/paythosClient.js";
+import { TransactabilityIndex } from "../client/transactability.js";
 import { PaythosError } from "../core/errors.js";
 import { VaultReader, vaultReaderFor } from "../core/vaultReader.js";
 import { JsonRpcProvider, Wallet } from "ethers";
@@ -168,7 +169,7 @@ const client = new PaythosClient(signer, {
   signer,
   network: NETWORK,
   allowlist: ALLOWLIST,
-  transactability: AlwaysApprove, // real oracle lands Gate 3
+  transactability: new TransactabilityIndex(), // measured in-session health
   allowanceMicro: DEFAULT_ALLOWANCE_MICRO,
   ...(RPC_URL ? { allowanceProvider: onChainAllowanceMicro } : {}),
 });

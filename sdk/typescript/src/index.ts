@@ -12,6 +12,7 @@ export * from "./signer/voucherSigner.js";
 export * from "./client/paythosClient.js";
 export * from "./client/metering.js";
 export * from "./client/holdLedger.js";
+export * from "./client/transactability.js";
 export * from "./middleware/merchant.js";
 export * from "./middleware/flushDaemon.js";
 export { paythosMerchant } from "./middleware/express.js";

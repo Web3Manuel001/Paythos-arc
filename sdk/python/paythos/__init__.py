@@ -38,6 +38,18 @@ from .policy_engine import (
     TierThresholds,
 )
 from .rate_limit import RateLimitDecision, TokenBucket
+from .transactability import (
+    DEFAULT_TRANSACTABILITY_CONFIG,
+    InMemoryTransactabilityRegistry,
+    MerchantObservation,
+    TransactabilityAttestation,
+    TransactabilityConfig,
+    TransactabilityIndex,
+    TransactabilityRegistry,
+    TransactabilityScore,
+    TransactabilityVerdict,
+    is_transactability_index,
+)
 from .signer import (
     AgentVoucherSigner,
     SigningDomainArgs,
@@ -132,4 +144,14 @@ __all__ = [
     "domain_for",
     "recover_voucher_signer",
     "sign_voucher",
+    "DEFAULT_TRANSACTABILITY_CONFIG",
+    "InMemoryTransactabilityRegistry",
+    "MerchantObservation",
+    "TransactabilityAttestation",
+    "TransactabilityConfig",
+    "TransactabilityIndex",
+    "TransactabilityRegistry",
+    "TransactabilityScore",
+    "TransactabilityVerdict",
+    "is_transactability_index",
 ]
