@@ -44,5 +44,8 @@
     "tsx": "^4.23.15",
     "typescript": "^5.6.0",
     "vitest": "^2.1.9"
+  },
+  "bin": {
+    "paythos-mcp": "dist/mcp/server.js"
   }
 }

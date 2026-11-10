@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Paythos MCP server (docs/ARCHITECTURE.md Module 4.3) — stdio JSON-RPC 2.0.
  * Any MCP-capable agent host (Claude Desktop, Cursor, …) mounts budgeted
@@ -268,7 +269,12 @@ async function callTool(name: string | undefined, args: Record<string, unknown>)
     case "dry_run_errand": {
       const challenge = args["challenge"] as PaymentChallenge;
       const report = client.dryRun(challenge);
-      return { ...report, reason: report.reason, tier: report.tier };
+      // MCP frames are text/JSON: bigint fields (micro-USDC) must cross as strings.
+      return JSON.parse(
+        JSON.stringify({ ...report, reason: report.reason, tier: report.tier }, (_, value) =>
+          typeof value === "bigint" ? value.toString() : value,
+        ),
+      ) as Record<string, unknown>;
     }
 
     case "settle_invoice": {
@@ -320,7 +326,12 @@ async function callTool(name: string | undefined, args: Record<string, unknown>)
 const stateFile = process.env.PAYTHOS_MCP_LEDGER;
 function persistLedger(): void {
   if (!stateFile) return;
-  writeFileSync(stateFile, JSON.stringify(signer.ledgerSnapshot()), "utf8");
+  const snapshot = signer.ledgerSnapshot().map((entry) => ({
+    merchant: entry.merchant,
+    cumulativeAmount: entry.cumulativeAmount.toString(),
+    lastSignedAt: entry.lastSignedAt,
+  }));
+  writeFileSync(stateFile, JSON.stringify(snapshot), "utf8");
 }
 
 const rl = createInterface({ input: process.stdin });

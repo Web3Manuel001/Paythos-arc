@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "paythos": {
+      "command": "npx",
+      "args": ["-y", "-p", "@paythos/sdk", "paythos-mcp"],
+      "env": {
+        "PAYTHOS_EPHEMERAL_KEY": "<agent ephemeral private key, 0x-prefixed>",
+        "PAYTHOS_VAULT_ADDRESS": "<deployed PaythosVault address>",
+        "PAYTHOS_AGENT_EPOCH": "1",
+        "PAYTHOS_MERCHANTS": "<comma-separated allowlisted merchant addresses>",
+        "PAYTHOS_RPC_URL": "<optional Arc RPC for live budget telemetry>"
+      }
+    }
+  }
+}
