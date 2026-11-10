@@ -13,6 +13,7 @@ import {
 } from "../types.js";
 import { verifyTypedData, type TypedDataDomain } from "ethers";
 import { VOUCHER_TYPES, domainFor } from "../signer/voucherSigner.js";
+import { TokenBucket } from "../core/tokenBucket.js";
 
 export interface MerchantChallengeContext {
   method: string;
@@ -47,6 +48,12 @@ export interface MerchantVerifierConfig {
   flushIntervalSeconds?: number;
   /** Flush trigger (INV-M2/M3): highest-voucher flush + idempotent receipts. */
   onFlushReady?: (flush: FlushPlan) => Promise<void>;
+  /**
+   * INV-M6 transport limiter at the merchant boundary: a runaway loop is
+   * throttled with 429 + Retry-After BEFORE any backend work. Per-agentKey
+   * bucket; defaults 100 burst / 10 per second (spec default).
+   */
+  rateLimit?: { capacity: number; refillPerSecond: number };
 }
 
 export interface FlushPlan {
@@ -64,6 +71,8 @@ export interface VerifyOutcome {
   agentKey?: string;
   /** Uncollected exposure remaining after this verification. */
   unsettledMicro: bigint;
+  /** Seconds until the next token (present only on 429 throttles). */
+  retryAfterSeconds?: number;
 }
 
 interface VoucherRecord {
@@ -79,6 +88,8 @@ export class VoucherAccumulator {
   /** Last activity per agent (voucher accepted or settlement confirmed). */
   readonly #lastActivityAt = new Map<string, number>();
   #domain: TypedDataDomain;
+
+  readonly #buckets = new Map<string, TokenBucket>();
 
   constructor(protected readonly cfg: MerchantVerifierConfig) {
     this.#domain = domainFor({ network: cfg.network, vaultAddress: cfg.vaultAddress });
@@ -130,8 +141,28 @@ export class VoucherAccumulator {
     return this.#verifyCore(voucher, signature);
   }
 
+  /** Per-agent bucket (created lazily; config-driven with spec defaults). */
+  #limitFor(agentKey: string): TokenBucket {
+    const key = agentKey.toLowerCase();
+    let bucket = this.#buckets.get(key);
+    if (bucket === undefined) {
+      bucket = new TokenBucket(this.cfg.rateLimit ?? { capacity: 100, refillPerSecond: 10 });
+      this.#buckets.set(key, bucket);
+    }
+    return bucket;
+  }
+
   /** Shared verification pipeline used by both wire formats. */
   #verifyCore(voucher: Voucher, signature: string): VerifyOutcome {
+    // INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
+    const throttle = this.#limitFor(voucher.agentKey).tryConsume();
+    if (!throttle.allowed) {
+      return fail(
+        429,
+        `local rate limit — retry in ${throttle.retryAfterSeconds}s`,
+        throttle.retryAfterSeconds,
+      );
+    }
     if (voucher.token !== this.cfg.settlementToken) {
       return fail(402, "voucher token is not the configured settlement token");
     }
@@ -266,8 +297,14 @@ export class VoucherAccumulator {
   }
 }
 
-function fail(status: 402 | 429, reason: string): VerifyOutcome {
-  return { ok: false, status, reason, unsettledMicro: 0n };
+function fail(status: 402 | 429, reason: string, retryAfterSeconds?: number): VerifyOutcome {
+  return {
+    ok: false,
+    status,
+    reason,
+    unsettledMicro: 0n,
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+  };
 }
 
 function toHeaders(h: Headers | Record<string, string>): Headers {

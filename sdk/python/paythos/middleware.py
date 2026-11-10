@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Mapping
@@ -81,6 +82,8 @@ class VerifyOutcome:
     reason: str = ""
     agent_key: str = ""
     unsettled_micro: int = 0
+    #: Seconds until the next token (present only on 429 throttles).
+    retry_after_seconds: float | None = None
 
 
 class VoucherAccumulator:
@@ -96,9 +99,7 @@ class VoucherAccumulator:
         self._domain = domain_for(
             SigningDomainArgs(network=config.network, vault_address=config.vault_address)
         )
-        self._bucket = TokenBucket(
-            capacity=config.rate_limit[0], refill_per_second=config.rate_limit[1]
-        )
+        self._buckets: dict[str, TokenBucket] = {}
 
     @property
     def domain(self) -> dict[str, object]:
@@ -120,9 +121,6 @@ class VoucherAccumulator:
         only (INV-1/INV-M2).
         """
         lowered = {k.lower(): v for k, v in headers.items()}
-
-        if not self._bucket.try_consume().allowed:
-            return VerifyOutcome(ok=False, status=429, reason="token bucket exhausted (INV-M6)")
 
         envelope = lowered.get(PAYMENT_SIGNATURE_HEADER)
         voucher: Voucher | None
@@ -149,7 +147,26 @@ class VoucherAccumulator:
 
         return self._verify_core(voucher, signature)
 
+    def _limit_for(self, agent_key: str) -> TokenBucket:
+        """Per-agent bucket (created lazily; config-driven with spec defaults)."""
+        key = agent_key.lower()
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            capacity, refill = self.cfg.rate_limit
+            bucket = TokenBucket(capacity=capacity, refill_per_second=refill)
+            self._buckets[key] = bucket
+        return bucket
+
     def _verify_core(self, voucher: Voucher, signature: str) -> VerifyOutcome:
+        # INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
+        throttle = self._limit_for(voucher.agent_key).try_consume()
+        if not throttle.allowed:
+            return VerifyOutcome(
+                ok=False,
+                status=429,
+                reason=f"local rate limit — retry in {throttle.retry_after_seconds}s (INV-M6)",
+                retry_after_seconds=throttle.retry_after_seconds,
+            )
         if voucher.token.lower() != self.cfg.settlement_token.lower():
             return VerifyOutcome(
                 ok=False, status=402, reason="voucher token is not the configured settlement token"
@@ -369,6 +386,16 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
             outcome = accumulator.verify_payment(headers)
             if not outcome.ok:
                 response_headers = {"accept-payment": "PAYTHOS/x402v2"}
+                if outcome.status == 429:
+                    # INV-M6: throttle the loop — no re-challenge, just backoff.
+                    response_headers["Retry-After"] = str(
+                        max(1, math.ceil(outcome.retry_after_seconds or 1))
+                    )
+                    return JSONResponse(
+                        {"error": outcome.reason or "rate limited"},
+                        status_code=429,
+                        headers=response_headers,
+                    )
                 if challenge_for is not None:
                     # Re-challenge so the agent can retry with a fresh voucher.
                     ctx = MerchantChallengeContext(method=request.method, url=request.url.path)

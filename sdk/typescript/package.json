@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "mcp": "tsx src/mcp/server.ts",
     "e2e:arc": "tsx scripts/arc-e2e.ts",
-    "flushd": "tsx scripts/flushd.ts"
+    "flushd": "tsx scripts/flushd.ts",
+    "bench:verify": "tsx scripts/bench-verify.ts"
   },
   "dependencies": {
     "ethers": "^6.13.4",

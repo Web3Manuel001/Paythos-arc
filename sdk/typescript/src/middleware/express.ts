@@ -59,6 +59,12 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
     if (!outcome.ok) {
       res.status(outcome.status);
       res.setHeader("accept-payment", "PAYTHOS/x402v2");
+      if (outcome.status === 429) {
+        // INV-M6: throttle the loop — no re-challenge, just backoff.
+        res.setHeader("Retry-After", String(Math.max(1, Math.ceil(outcome.retryAfterSeconds ?? 1))));
+        res.json({ error: outcome.reason ?? "rate limited" });
+        return;
+      }
       if (challengeFor) {
         // Re-challenge on rejection so the agent can retry with a fresh voucher.
         const ctx: MerchantChallengeContext = { method: req.method ?? "GET", url: req.originalUrl ?? req.url };
