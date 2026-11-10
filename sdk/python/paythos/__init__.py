@@ -13,6 +13,13 @@ from .client import (
     parse_max_micro,
     serialize_voucher,
 )
+from .discovery import (
+    CIRCLE_DISCOVERY_URL,
+    CircleDiscoveryQuery,
+    DiscoveryResult,
+    discovery_query_string,
+    query_circle_marketplace,
+)
 from .errors import PaythosError
 from .hold_ledger import HoldEntry, HoldLedger, HoldState, stream_id_for
 from .metering import (
@@ -154,4 +161,9 @@ __all__ = [
     "TransactabilityScore",
     "TransactabilityVerdict",
     "is_transactability_index",
+    "CIRCLE_DISCOVERY_URL",
+    "CircleDiscoveryQuery",
+    "DiscoveryResult",
+    "discovery_query_string",
+    "query_circle_marketplace",
 ]
