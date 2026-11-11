@@ -5,8 +5,9 @@ accumulates strictly-increasing vouchers (INV-M2), enforces the credit wall
 (INV-M4) against UNSETTLED exposure and surfaces flush plans.
 Accepts BOTH wire formats (REV-5): the x402 v2 ``PAYMENT-SIGNATURE`` JSON
 envelope and the native ``x-paythos-voucher``/``x-paythos-signature`` pair.
-FastAPI middleware is a thin adapter that refuses unpriced traffic with a
-402 challenge when ``challenge_for`` is configured (REV-4).
+FastAPI middleware is a thin adapter that fails closed: unpaid traffic gets a
+402 challenge when ``challenge_for`` is configured and a 402
+``payment_required`` rejection when it is not (no pass-through).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import math
 import time
 from dataclasses import dataclass
@@ -51,6 +53,10 @@ class MerchantVerifierConfig:
     vault_address: str
     #: The vault's immutable settlement token (Arc native-USDC precompile).
     settlement_token: str
+    #: Payee binding (fail closed): the ONLY merchant this middleware accepts
+    #: vouchers for. A voucher naming another merchant must never unlock these
+    #: resources nor enter this payee's ledger.
+    merchant_address: str
     #: ACTIVE delegation epochs per agentKey (lowercase ⇒ epoch, INV-6).
     authorized_agents: Mapping[str, int]
     #: x402 challenge factory (PROTOCOL.md §3.1). Requests WITHOUT payment
@@ -92,10 +98,15 @@ class VoucherAccumulator:
     def __init__(self, config: MerchantVerifierConfig) -> None:
         self.cfg = config
         self._highest: dict[str, tuple[Voucher, str]] = {}
-        # Settled cumulative per agent — the daemon reports it post-confirmation.
-        self._settled: dict[str, int] = {}
+        # Settled cumulative per agent, SCOPED to the delegation epoch: on-chain
+        # claims reset on re-authorization (INV-6), so an epoch-N settlement
+        # must never mask epoch-N+1 exposure.
+        self._settled: dict[str, tuple[int, int]] = {}
         # Last activity per agent (voucher accepted or settlement confirmed).
         self._last_activity_at: dict[str, int] = {}
+        if not re.fullmatch(r"0x[0-9a-fA-F]{40}", config.merchant_address or ""):
+            raise ValueError("merchant_address must be a 20-byte hex address (payee binding)")
+        self._merchant = config.merchant_address.lower()
         self._domain = domain_for(
             SigningDomainArgs(network=config.network, vault_address=config.vault_address)
         )
@@ -169,6 +180,11 @@ class VoucherAccumulator:
             return VerifyOutcome(
                 ok=False, status=402, reason="voucher token is not the configured settlement token"
             )
+        # Payee binding: only vouchers made out to THIS merchant may redeem.
+        if voucher.merchant.lower() != self._merchant:
+            return VerifyOutcome(
+                ok=False, status=402, reason="voucher merchant is not this middleware's payee"
+            )
         lower_key = voucher.agent_key.lower()
         authorized_epoch = self.cfg.authorized_agents.get(lower_key)
         if authorized_epoch is None:
@@ -210,8 +226,15 @@ class VoucherAccumulator:
                 ok=False, status=402, reason="signature was NOT signed by voucher.agentKey"
             )
 
+        # INV-1/INV-M2, EPOCH-SCOPED: re-authorization resets the on-chain
+        # cumulative claim to zero, so a new-epoch voucher may restart lower.
         current = self._highest.get(recovered)
-        if current is not None and voucher.cumulative_amount <= current[0].cumulative_amount:
+        epoch_changed = current is not None and current[0].epoch != voucher.epoch
+        if (
+            not epoch_changed
+            and current is not None
+            and voucher.cumulative_amount <= current[0].cumulative_amount
+        ):
             # INV-1/INV-M2: reject stale/identical replays.
             return VerifyOutcome(
                 ok=False,
@@ -221,7 +244,7 @@ class VoucherAccumulator:
 
         # INV-M4 credit wall: halt streaming until a flush confirms settlement,
         # measured as UNSETTLED exposure (cumulative − confirmed on-chain).
-        settled = self._settled.get(recovered, 0)
+        settled = self._settled_for(recovered, voucher.epoch)
         unsettled_candidate = max(voucher.cumulative_amount - settled, 0)
         if unsettled_candidate > self.cfg.credit_tolerance_micro:
             return VerifyOutcome(
@@ -244,9 +267,14 @@ class VoucherAccumulator:
             unsettled_micro=unsettled,
         )
 
+    def _settled_for(self, agent_key: str, epoch: int) -> int:
+        """Settled amount valid ONLY for that delegation epoch."""
+        record = self._settled.get(agent_key)
+        return record[1] if record is not None and record[0] == epoch else 0
+
     def unsettled_micro(self, voucher: Voucher) -> int:
         """Unsettled exposure for ONE voucher: cumulative − confirmed settled."""
-        settled = self._settled.get(voucher.agent_key.lower(), 0)
+        settled = self._settled_for(voucher.agent_key.lower(), voucher.epoch)
         return max(voucher.cumulative_amount - settled, 0)
 
     def unsettled_for(self, agent_key: str) -> int:
@@ -256,14 +284,23 @@ class VoucherAccumulator:
             return 0
         return self.unsettled_micro(record[0])
 
-    def mark_settled(self, agent_key: str, cumulative_settled: int) -> None:
+    def mark_settled(self, agent_key: str, cumulative_settled: int, epoch: int | None = None) -> None:
         """
         Record an on-chain settlement (INV-M3). Called by the flush daemon
         after confirmation; resets the credit wall so the session continues.
+        Late reports from a SUPERSEDED epoch are ignored — they can never
+        reduce the new epoch's exposure.
         """
         key = agent_key.lower()
-        if cumulative_settled > self._settled.get(key, 0):
-            self._settled[key] = cumulative_settled
+        current = self._highest.get(key)
+        effective_epoch = epoch if epoch is not None else (current[0].epoch if current else None)
+        if effective_epoch is None:
+            return
+        prior = self._settled.get(key)
+        if prior is not None and effective_epoch < prior[0]:
+            return
+        base = prior[1] if prior is not None and prior[0] == effective_epoch else 0
+        self._settled[key] = (effective_epoch, max(cumulative_settled, base))
         self._last_activity_at[key] = int(time.time())
 
     def highest(self, agent_key: str) -> Voucher | None:
@@ -389,7 +426,16 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
             headers = dict(request.headers)
             if not _has_payment_headers(headers):
                 if challenge_for is None:
-                    return await call_next(request)
+                    # Fail closed: without a challenge factory the route cannot
+                    # be priced, so an unpaid request never reaches the app.
+                    return JSONResponse(
+                        {
+                            "error": "payment_required",
+                            "detail": "challenge_for not configured — priced routes require payment (fail closed)",
+                        },
+                        status_code=402,
+                        headers={"accept-payment": "PAYTHOS/x402v2"},
+                    )
                 return _challenge_response(request)
             outcome = accumulator.verify_payment(headers)
             if not outcome.ok:

@@ -95,6 +95,7 @@ describe("Scenario A — $0.002 upto streaming (ARCHITECTURE.md §3)", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_NATIVE_USDC,
+      merchantAddress: MERCHANT,
       authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       challengeFor: () => challengeJson(MERCHANT, "0.01", "upto"),
       onFlushReady: async (plan) => {

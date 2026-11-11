@@ -48,6 +48,7 @@ function accumulatorFor(signer: AgentVoucherSigner): VoucherAccumulator {
     network: TESTNET,
     vaultAddress: TEST_VAULT,
     settlementToken: AR_NATIVE_USDC,
+    merchantAddress: TEST_MERCHANT,
     authorizedAgents: new Map([[signer.agentKey.toLowerCase(), signer.epoch]]),
     rateLimit: LIMIT,
   });
@@ -110,6 +111,7 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
         network: TESTNET,
         vaultAddress: TEST_VAULT,
         settlementToken: AR_NATIVE_USDC,
+        merchantAddress: TEST_MERCHANT,
         authorizedAgents: new Map([[signer.agentKey.toLowerCase(), signer.epoch]]),
         rateLimit: LIMIT,
         challengeFor: () => ({
@@ -172,6 +174,7 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_NATIVE_USDC,
+      merchantAddress: TEST_MERCHANT,
       authorizedAgents: new Map([
         [noisy.agentKey.toLowerCase(), noisy.epoch],
         [quiet.agentKey.toLowerCase(), quiet.epoch],

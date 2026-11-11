@@ -11,6 +11,7 @@ pragma solidity 0.8.28;
 library FeeDistribution {
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant FEE_CAP_BPS = 500; // hard 5% cap (AGENTS.md rule 6)
+    uint256 public constant FEE_FLOOR_BPS = 1; // protocol fee switch can never be 0
     uint256 public constant DEFAULT_FEE_BPS = 150; // 1.5%
 
     function amountForBps(uint256 value, uint256 bps) internal pure returns (uint256) {

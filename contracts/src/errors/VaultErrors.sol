@@ -35,6 +35,9 @@ library VaultErrors {
     error ImmutableConfigured();
     /// Fee update pushed `feeBps` above the protocol cap (docs/PROTOCOL.md §2.8).
     error FeeCapExceeded(uint256 attempted, uint256 capInBps);
+    /// Fee update set `feeBps` below the non-zero floor: the fee switch may
+    ///      never be silently disabled (reviewer 2026-11).
+    error FeeFloorViolated(uint256 attempted, uint256 floorInBps);
     /// `claimVoucher` reached while the vault has no delegated unsettled float.
     error NothingToClaim();
     /// Token operations would corrupt the 1:1 capital isolation ratio (INV-5).

@@ -236,6 +236,15 @@ contract PaythosVaultHandler is Test {
     }
 
     /**
+     * @notice Exact 24h/48h jumps — deliberately exercises the h / h−24 slot
+     *      aliasing edge that a random 0..24h warp almost never hits (INV-2
+     *      slot-collision regression, 2026-11).
+     */
+    function warpExactDayOrder(uint256 days_) public {
+        vm.warp(block.timestamp + ((days_ % 2) + 1) * 24 hours);
+    }
+
+    /**
      * @notice Re-authorize an agent: fresh window + epoch (clean-slate rule).
      */
     function reauthorizeOrder(uint256 agentSeed, uint256 ttlHours) public {

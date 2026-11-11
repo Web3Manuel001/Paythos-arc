@@ -64,7 +64,7 @@ The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the cur
 ## Non-Negotiable Design Rules
 
 1. **Non-custodial always.** The human owner retains emergency withdrawal rights. No pooled liquidity, no rehypothecation, no yield logic.
-2. **Deltas are enforced on-chain.** `claimVoucher()` must require `cumulativeAmount > previousClaim`, `delta <= maxPerTx`, `spentToday + delta <= dailyLimit` against a rolling 24h window computed from `block.timestamp` on exact hour boundaries (24-slot `SlidingWindow` ring; no oracles, no cron). It must also require the ACTIVE delegation epoch (INV-6).
+2. **Deltas are enforced on-chain.** `claimVoucher()` must require `cumulativeAmount > previousClaim`, `delta <= maxPerTx`, `spentToday + delta <= dailyLimit` against a rolling 24h window computed from `block.timestamp` on exact hour boundaries (25-slot `SlidingWindow` ring; no oracles, no cron). It must also require the ACTIVE delegation epoch (INV-6).
 3. **Fail closed.** Policy ambiguity → halt. Never default to allow.
 4. **Never build custody, bridging, or marketplace features** — that is Circle's lane. Cross-chain funding is done by calling Circle's CCTP attestation/minting rail only. Paythos ingests Circle's tools (Discovery API, CCTP); it never re-implements settlement rails Circle already provides.
 5. **Secrets hygiene.** Ephemeral keys come from environment variables (`PAYTHOS_EPHEMERAL_KEY`, `PAYTHOS_VAULT_ADDRESS`, …). Nothing key-related is ever logged, committed, or embedded. EIP-712 messages may be logged; signatures of real spend cannot be replayed across sessions.
@@ -73,9 +73,9 @@ The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the cur
 ## Verification (run before every commit)
 
 ```bash
-cd contracts && forge test                        # 34 tests (unit + invariant fuzz)
-cd sdk/typescript && npx tsc --noEmit && npm test # 127 tests, strict TS
-cd sdk/python && .venv/bin/python -m pytest tests # 103 tests (asyncio_mode=auto)
+cd contracts && forge test                        # 36 tests (unit + invariant fuzz)
+cd sdk/typescript && npx tsc --noEmit && npm test # 132 tests, strict TS
+cd sdk/python && .venv/bin/python -m pytest tests # 108 tests (asyncio_mode=auto)
 cd sdk/typescript && npm run bench:verify -- 2000 --enforce   # release hardware only
 ```
 

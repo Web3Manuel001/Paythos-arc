@@ -40,6 +40,7 @@ function accumulatorFor(
     network: TESTNET,
     vaultAddress: TEST_VAULT,
     settlementToken: AR_NATIVE_USDC,
+    merchantAddress: TEST_MERCHANT,
     authorizedAgents: new Map([[signer.agentKey.toLowerCase(), epoch]]),
     ...extra,
   });
@@ -168,6 +169,7 @@ describe("REV-4 — express membrane gates instead of passing through", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_NATIVE_USDC,
+      merchantAddress: TEST_MERCHANT,
       authorizedAgents: new Map<string, number>(),
       ...(config.withChallenge
         ? { challengeFor: () => challenge("0.10") }
@@ -216,10 +218,12 @@ describe("REV-4 — express membrane gates instead of passing through", () => {
     expect((result.body as { error: string }).error).toBe("payment_required");
   });
 
-  it("no payment headers + legacy mount (no challengeFor) still passes through", async () => {
+  it("no payment headers + legacy mount (no challengeFor) fails closed — never a free pass", async () => {
     const result = await runExpress({ withChallenge: false });
-    expect(result.status).toBe(200);
-    expect(result.reachedHandler).toBe(true);
+    expect(result.status).toBe(402);
+    expect(result.reachedHandler).toBe(false);
+    expect((result.body as { error: string }).error).toBe("payment_required");
+    expect(result.headers["payment-required"]).toBeUndefined(); // cannot price the route
   });
 
   it("valid native payment headers reach the handler with req.paythos pinned", async () => {
@@ -247,6 +251,74 @@ describe("REV-4 — express membrane gates instead of passing through", () => {
     expect(result.reachedHandler).toBe(false);
     expect(result.headers["payment-required"]).toBeDefined();
   });
+
+describe("REV-8 — payee binding + epoch-scoped merchant ledger (reviewer 2026-11)", () => {
+  it("rejects a voucher made out to a DIFFERENT merchant (never unlocks this payee)", async () => {
+    const signer = makeSigner(1);
+    const merchant = accumulatorFor(signer, 1);
+    const otherMerchant = "0x00000000000000000000000000000000deadbeef";
+    const signed = await signer.recordAndSign(otherMerchant, parseUsdToMicro("0.50"), "0x" + "b1".repeat(32));
+    if (!signed.ok) throw new Error("sign failed");
+    const outcome = merchant.verifyPayment(signed.headers);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.status).toBe(402);
+    expect(outcome.reason).toMatch(/payee/);
+    expect(merchant.highest(signer.agentKey)).toBeUndefined();
+  });
+
+  it("refuses to construct without a valid merchantAddress (fail closed)", () => {
+    const signer = makeSigner(1);
+    expect(
+      () =>
+        new VoucherAccumulator({
+          network: TESTNET,
+          vaultAddress: TEST_VAULT,
+          settlementToken: AR_NATIVE_USDC,
+          authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
+        } as never),
+    ).toThrow(/merchantAddress/);
+  });
+
+  it("re-authorization clean slate: lower new-epoch voucher is accepted and exposure resets", async () => {
+    const signer = makeSigner(1);
+    const agents = new Map([[signer.agentKey.toLowerCase(), 1]]);
+    const plans: unknown[] = [];
+    const merchant = new VoucherAccumulator({
+      network: TESTNET,
+      vaultAddress: TEST_VAULT,
+      settlementToken: AR_NATIVE_USDC,
+      merchantAddress: TEST_MERCHANT,
+      authorizedAgents: agents,
+      flushThresholdMicro: 400_000n,
+      onFlushReady: async (plan) => {
+        plans.push(plan);
+      },
+    });
+    const oldEpoch = await signer.recordAndSign(TEST_MERCHANT, parseUsdToMicro("1.50"), "0x" + "b2".repeat(32));
+    if (!oldEpoch.ok) throw new Error("sign failed");
+    expect(merchant.verifyPayment(oldEpoch.headers).ok).toBe(true);
+    expect(merchant.unsettledFor(signer.agentKey)).toBe(parseUsdToMicro("1.50"));
+
+    // Owner re-authorizes on-chain (epoch 1 → 2): active map rotates and the
+    // signer's ledger resets. The SAME accumulator must accept the lower value.
+    signer.setEpoch(2);
+    agents.set(signer.agentKey.toLowerCase(), 2);
+    const newEpoch = await signer.recordAndSign(TEST_MERCHANT, parseUsdToMicro("0.50"), "0x" + "b3".repeat(32));
+    if (!newEpoch.ok) throw new Error("sign failed");
+    expect(newEpoch.voucher.epoch).toBe(2);
+    const outcome = merchant.verifyPayment(newEpoch.headers);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.unsettledMicro).toBe(parseUsdToMicro("0.50"));
+
+    // A late settlement report from the superseded epoch must not mask it.
+    merchant.markSettled(signer.agentKey, parseUsdToMicro("1.50"), 1);
+    expect(merchant.unsettledFor(signer.agentKey)).toBe(parseUsdToMicro("0.50"));
+    // Settling the live epoch clears exposure; the flush plan carries epoch 2.
+    merchant.markSettled(signer.agentKey, parseUsdToMicro("0.50"), 2);
+    expect(merchant.unsettledFor(signer.agentKey)).toBe(0n);
+    expect((plans.at(-1) as { voucher: { epoch: number } }).voucher.epoch).toBe(2);
+  });
+});
 });
 
 describe("REV-6 — flush fires before the credit wall traps the session", () => {
@@ -359,6 +431,7 @@ describe("REV-15 — client ↔ express merchant over real HTTP (x402 lifecycle)
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_NATIVE_USDC,
+      merchantAddress: TEST_MERCHANT,
       authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       challengeFor: () => challenge("0.25"),
     };

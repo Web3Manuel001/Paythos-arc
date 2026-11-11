@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { Interface } from "ethers";
 import { AgentVoucherSigner } from "../src/signer/voucherSigner.js";
 import { VoucherAccumulator, type FlushPlan } from "../src/middleware/merchant.js";
 import {
+  claimVoucherArgs,
   FlushDaemon,
   JsonReceiptStore,
   MemoryReceiptStore,
   type VaultSubmitter,
 } from "../src/middleware/flushDaemon.js";
 import { AR_NATIVE_USDC, TEST_MERCHANT, TEST_VAULT, TESTNET, ephemeralPrivateKey } from "./helpers.js";
+import paythosVaultAbi from "../src/abi/paythosVault.json";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,8 +20,10 @@ const MEMO = `0x${"ab".repeat(32)}`;
 class CapturingSubmitter implements VaultSubmitter {
   calls: Array<{ cumulative: string; signature: string }> = [];
   failWith: string | undefined;
+  failWithData: string | undefined;
 
   async claim(voucher: { cumulativeAmount: bigint }, signature: string) {
+    if (this.failWithData) throw { data: this.failWithData };
     if (this.failWith) throw new Error(this.failWith);
     this.calls.push({ cumulative: voucher.cumulativeAmount.toString(), signature });
     return { kind: "submitted" as const, txHash: `0xdead${this.calls.length}` };
@@ -46,6 +51,7 @@ function makeAccumulator(signer: AgentVoucherSigner, handler?: RecordingHandler)
     network: TESTNET,
     vaultAddress: TEST_VAULT,
     settlementToken: AR_NATIVE_USDC,
+    merchantAddress: TEST_MERCHANT,
     authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
     flushThresholdMicro: 400n,
     onFlushReady: handler?.onFlushReady,
@@ -74,6 +80,7 @@ describe("VoucherAccumulator — settled-state bookkeeping", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_NATIVE_USDC,
+      merchantAddress: TEST_MERCHANT,
       authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       creditToleranceMicro: 1_000n,
     });
@@ -112,6 +119,28 @@ describe("VoucherAccumulator — settled-state bookkeeping", () => {
   });
 });
 
+describe("EthersVaultSubmitter claim encoding", () => {
+  it("encodes the full v3 Voucher tuple including epoch", () => {
+    const signer = makeSigner();
+    const voucher = {
+      agentKey: signer.agentKey,
+      merchant: TEST_MERCHANT,
+      token: AR_NATIVE_USDC,
+      cumulativeAmount: 12_345n,
+      validUntil: 9_000_000_000n,
+      epoch: 7,
+      memo: MEMO,
+    };
+    const iface = new Interface(paythosVaultAbi);
+    // Throws "missing value for component 'epoch'" if the submitter struct
+    // regresses to the pre-v3 shape (review regression).
+    const data = iface.encodeFunctionData("claimVoucher", [claimVoucherArgs(voucher), "0xfeed"]);
+    const [decoded] = iface.decodeFunctionData("claimVoucher", data);
+    expect(decoded.epoch).toBe(7n);
+    expect(decoded.cumulativeAmount).toBe(12_345n);
+  });
+});
+
 describe("FlushDaemon", () => {
   it("settles the highest voucher and persists receipt after confirmation", async () => {
     const signer = makeSigner();
@@ -126,7 +155,7 @@ describe("FlushDaemon", () => {
     expect(submitter.calls.length).toBe(1);
     expect(submitter.calls[0]).toEqual({ cumulative: "500", signature: "0xfeed" });
     const receipts = await store.load();
-    const receipt = receipts.get(`${signer.agentKey.toLowerCase()}:${TEST_MERCHANT.toLowerCase()}`);
+    const receipt = receipts.get(`${signer.agentKey.toLowerCase()}:${TEST_MERCHANT.toLowerCase()}:1`);
     expect(receipt?.txHash).toBe("0xdead1");
     expect(receipt?.cumulativeAmount).toBe("500");
     expect(receipt?.alreadySettled).toBe(false);
@@ -153,7 +182,7 @@ describe("FlushDaemon", () => {
     const daemon = new FlushDaemon({ submitter, receipts: store });
     const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, epoch: 1, memo: `0x${"0".repeat(64)}` };
     await daemon.settle({ agentKey: signer.agentKey, merchant: TEST_MERCHANT, voucher, signature: "0xfeed" });
-    const receipt = (await store.load()).get(`${signer.agentKey.toLowerCase()}:${TEST_MERCHANT.toLowerCase()}`);
+    const receipt = (await store.load()).get(`${signer.agentKey.toLowerCase()}:${TEST_MERCHANT.toLowerCase()}:1`);
     expect(receipt?.alreadySettled).toBe(true);
     expect(receipt?.txHash).toBeNull();
     // and a resubmission attempt is now skipped
@@ -164,17 +193,30 @@ describe("FlushDaemon", () => {
     expect(submitter2.calls.length).toBe(0);
   });
 
+  it("recognizes an InvalidVoucherAmount revert carried only as raw data", async () => {
+    const signer = makeSigner();
+    const submitter = new CapturingSubmitter();
+    const iface = new Interface(paythosVaultAbi);
+    submitter.failWithData = iface.encodeErrorResult("InvalidVoucherAmount", []);
+    const store = new MemoryReceiptStore();
+    const daemon = new FlushDaemon({ submitter, receipts: store });
+    const voucher = { agentKey: signer.agentKey, merchant: TEST_MERCHANT, token: AR_NATIVE_USDC, cumulativeAmount: 500n, validUntil: 9_000_000_000n, epoch: 1, memo: `0x${"0".repeat(64)}` };
+    await daemon.settle({ agentKey: signer.agentKey, merchant: TEST_MERCHANT, voucher, signature: "0xfeed" });
+    const receipt = (await store.load()).get(`${signer.agentKey.toLowerCase()}:${TEST_MERCHANT.toLowerCase()}:1`);
+    expect(receipt?.alreadySettled).toBe(true);
+  });
+
   it("JsonReceiptStore round-trips through disk atomically", async () => {
     const dir = await mkdtemp(join(tmpdir(), "paythos-flush-"));
     try {
       const path = join(dir, "receipts.json");
       const store = new JsonReceiptStore(path);
-      await store.save({ agentKey: "0xaA", merchant: "0xbB", cumulativeAmount: "700", txHash: "0x1", settledAt: 1, alreadySettled: false });
+      await store.save({ agentKey: "0xaA", merchant: "0xbB", epoch: 3, cumulativeAmount: "700", txHash: "0x1", settledAt: 1, alreadySettled: false });
       const reopened = new JsonReceiptStore(path);
       const loaded = await reopened.load();
-      expect(loaded.get("0xaa:0xbb")?.cumulativeAmount).toBe("700");
+      expect(loaded.get("0xaa:0xbb:3")?.cumulativeAmount).toBe("700");
       const doc = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-      expect(Object.keys(doc)).toEqual(["0xaa:0xbb"]);
+      expect(Object.keys(doc)).toEqual(["0xaa:0xbb:3"]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

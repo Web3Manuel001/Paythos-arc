@@ -105,10 +105,14 @@ class AgentVoucherSigner:
     ) -> None:
         #: Ephemeral key from PAYTHOS_EPHEMERAL_KEY (AGENTS.md secrets hygiene).
         self._account = Account.from_key(private_key)
-        self._ledger: dict[str, LedgerEntry] = ledger if ledger is not None else {}
         self._ttl = voucher_ttl_seconds
         self._domain = domain_for(domain)
+        # Validate the epoch first (set_epoch clears the ledger by design), then
+        # install the caller's persisted ledger so constructor restore is not
+        # wiped by the rotation semantics.
+        self._ledger = {}
         self.set_epoch(epoch)
+        self._ledger = ledger if ledger is not None else {}
 
     @property
     def agent_key(self) -> str:
@@ -123,11 +127,14 @@ class AgentVoucherSigner:
         """
         Rotate the delegation epoch (INV-6): required after an on-chain
         re-authorization — the NEXT voucher must carry the new epoch or the
-        vault reverts with ``SessionEpochMismatch``.
+        vault reverts with ``SessionEpochMismatch``. Also resets the local
+        cumulative ledger: the vault zeros claimed totals on the epoch bump
+        (INV-6 clean slate), so a post-rotation voucher starts at zero.
         """
         if not isinstance(epoch, int) or epoch <= 0:
             raise PaythosError("policy_failure", f"epoch must be a positive integer, got {epoch!r}")
         self._epoch = epoch
+        self._ledger.clear()
 
     @property
     def domain(self) -> dict[str, object]:

@@ -7,22 +7,22 @@ pragma solidity 0.8.28;
  *      Ceiling). Hourly buckets + preferred stamp ordering enforce "no more
  *      than `dailyLimit` may settle within ANY 24-hour span" — a fixed-window
  *      limiter would permit limit+limit across two claims one second apart.
- * @dev Pool checked at claim hour h = stamps in [h-24, h]. Any true 24h window
- *      overlaps at most 25 consecutive hour stamps; the latest purchase within
- *      any window has had exactly that pool verified at its own claim, so the
- *      invariant holds with ZERO approximation error (hour granularity).
- *      Storage: 24 slots referenced stamp%24 — a stamp reappears every 24
- *      hours and its slot is only ever overwritten AFTER the old value has
- *      been counted in a pool check, so nothing is lost. 25 SLOAD-equivalent
- *      budget per claim (Arc gas, acceptable; do not reduce slots).
+ * @dev Pool checked at claim hour h = stamps in [h-24, h]. Any true 24h
+ *      window overlaps at most 25 consecutive hour stamps, so the pool must
+ *      hold 25 buckets: stamps h and h-24 are BOTH live and must not alias.
+ *      Storage: 25 slots referenced stamp%25 — a stamp reappears only after
+ *      25 hours, by which time it has left the pool. (24 slots aliased h-24
+ *      with h and let a second claim in hour h under-count the still-live
+ *      h-24 bucket — reviewer PoC, 2026-11.) 25 SLOAD-equivalent budget per
+ *      claim (Arc gas, acceptable; do not reduce slots).
  */
 library SlidingWindow {
-    uint256 internal constant SLOTS = 24; // hour buckets
+    uint256 internal constant SLOTS = 25; // hour buckets covering [h-24, h]
     uint256 internal constant HOUR = 1 hours;
 
     struct Window {
-        uint256[24] amount; // spend bucketed by hour
-        uint64[24] stamp; // hour index each amount belongs to; 0 ⇒ empty
+        uint256[25] amount; // spend bucketed by hour
+        uint64[25] stamp; // hour index each amount belongs to; 0 ⇒ empty
     }
 
     /**
@@ -38,7 +38,7 @@ library SlidingWindow {
             for (uint256 i; i < SLOTS; ++i) {
                 uint64 stamp = window.stamp[i];
                 if (stamp >= oldest && stamp <= h) {
-                    // slot i can only hold stamps ≡ i (mod 24); within the 25-hour
+                    // slot i can only hold stamps ≡ i (mod 25); within the 25-hour
                     // pool [h-24, h] exactly one stamp per slot qualifies.
                     total += window.amount[i];
                 }

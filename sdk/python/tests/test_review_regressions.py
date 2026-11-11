@@ -47,6 +47,7 @@ def make_accumulator(signer: AgentVoucherSigner, epoch: int = 1, **overrides) ->
         "network": TESTNET,
         "vault_address": TEST_VAULT,
         "settlement_token": AR_NATIVE_USDC,
+        "merchant_address": TEST_MERCHANT,
         "authorized_agents": {signer.agent_key.lower(): epoch},
     }
     kwargs.update(overrides)
@@ -256,3 +257,91 @@ def test_no_free_pass_with_challenge_configured() -> None:
     acc = make_accumulator(signer)
     outcome = acc.verify_payment({})
     assert not outcome.ok and outcome.status == 402
+
+
+def test_payee_binding_rejects_vouchers_for_another_merchant() -> None:
+    """A voucher made out to merchant B must never unlock merchant A's route."""
+    signer = make_signer(1)
+    acc = make_accumulator(signer)
+    other = "0x00000000000000000000000000000000deadbeef"
+    signed = signer.record_and_sign(other, parse_usd_to_micro("0.50"), MEMO)
+    assert signed.ok
+    outcome = acc.verify_payment(signed.headers)
+    assert not outcome.ok and outcome.status == 402
+    assert "payee" in outcome.reason
+    assert acc.highest(signer.agent_key) is None
+
+
+def test_config_requires_merchant_address() -> None:
+    with pytest.raises(TypeError):
+        MerchantVerifierConfig(  # type: ignore[call-arg]
+            network=TESTNET,
+            vault_address=TEST_VAULT,
+            settlement_token=AR_NATIVE_USDC,
+            authorized_agents={},
+        )
+
+
+def test_reauthorization_clean_slate_accepts_lower_new_epoch_voucher() -> None:
+    """Same accumulator across epoch rotation: exposure resets, old high-water
+    (and old settlements) must not mask the new epoch."""
+    signer = make_signer(1)
+    agents = {signer.agent_key.lower(): 1}
+    acc = VoucherAccumulator(
+        MerchantVerifierConfig(
+            network=TESTNET,
+            vault_address=TEST_VAULT,
+            settlement_token=AR_NATIVE_USDC,
+            merchant_address=TEST_MERCHANT,
+            authorized_agents=agents,
+        )
+    )
+    old = signer.record_and_sign(TEST_MERCHANT, parse_usd_to_micro("1.50"), MEMO)
+    assert old.ok and acc.verify_payment(old.headers).ok
+    assert acc.unsettled_for(signer.agent_key) == parse_usd_to_micro("1.50")
+
+    signer.set_epoch(2)
+    agents[signer.agent_key.lower()] = 2
+    new = signer.record_and_sign(TEST_MERCHANT, parse_usd_to_micro("0.50"), MEMO)
+    assert new.ok and new.voucher.epoch == 2
+    outcome = acc.verify_payment(new.headers)
+    assert outcome.ok and outcome.unsettled_micro == parse_usd_to_micro("0.50")
+
+    acc.mark_settled(signer.agent_key, parse_usd_to_micro("1.50"), epoch=1)
+    assert acc.unsettled_for(signer.agent_key) == parse_usd_to_micro("0.50")
+    acc.mark_settled(signer.agent_key, parse_usd_to_micro("0.50"), epoch=2)
+    assert acc.unsettled_for(signer.agent_key) == 0
+
+
+async def test_fastapi_without_challenge_for_fails_closed() -> None:
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from paythos.middleware import paythos_fastapi_middleware
+
+    signer = make_signer(1)
+    middleware_cls, _ = paythos_fastapi_middleware(
+        MerchantVerifierConfig(
+            network=TESTNET,
+            vault_address=TEST_VAULT,
+            settlement_token=AR_NATIVE_USDC,
+            merchant_address=TEST_MERCHANT,
+            authorized_agents={signer.agent_key.lower(): 1},
+        )
+    )
+    hits = 0
+    app = FastAPI()
+    app.add_middleware(middleware_cls)
+
+    @app.get("/paid")
+    async def paid():  # type: ignore[no-untyped-def]
+        nonlocal hits
+        hits += 1
+        return {"ok": True}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        response = await http.get("/paid")
+    assert response.status_code == 402
+    assert response.json()["error"] == "payment_required"
+    assert hits == 0

@@ -310,6 +310,9 @@ async function callTool(name: string | undefined, args: Record<string, unknown>)
       if (typeof url !== "string" || !/^https:\/\//.test(url)) {
         throw new PaythosError("invalid_challenge", "url must be an https URL");
       }
+      // INV-6: the agent may have been re-authorized since startup — rotate
+      // the epoch BEFORE signing, exactly like pay_x402_resource above.
+      await syncEpoch();
       return client.fetchWithX402({ url, prompt: (args["prompt"] as string)?.slice(0, 512) ?? url }).then(async (res) => {
         if (!res.ok) return { error: res.error };
         return {

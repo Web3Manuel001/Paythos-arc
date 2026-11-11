@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from paythos import AgentVoucherSigner, PaythosError, SigningDomainArgs, domain_for, format_micro_usd, parse_usd_to_micro
+from paythos import AgentVoucherSigner, LedgerEntry, PaythosError, SigningDomainArgs, domain_for, format_micro_usd, parse_usd_to_micro
 from paythos.signer import recover_voucher_signer
 
 from conftest import AR_NATIVE_USDC, TEST_MERCHANT, TEST_VAULT, TESTNET, ephemeral_private_key
@@ -96,3 +96,22 @@ def test_settle_merchant_rejects_negative_claimed() -> None:
     signer = make_signer()
     with pytest.raises(PaythosError):
         signer.settle_merchant(TEST_MERCHANT, -1)
+
+
+def test_constructor_preserves_persisted_ledger_and_set_epoch_resets_it() -> None:
+    ledger = {
+        TEST_MERCHANT.lower(): LedgerEntry(
+            merchant=TEST_MERCHANT.lower(),
+            cumulative_amount=parse_usd_to_micro("0.40"),
+            last_signed_at=1.0,
+        )
+    }
+    signer = AgentVoucherSigner(
+        private_key=ephemeral_private_key(),
+        domain=SigningDomainArgs(network=TESTNET, vault_address=TEST_VAULT),
+        epoch=1,
+        ledger=ledger,
+    )
+    assert signer.ledger_snapshot()[0].cumulative_amount == parse_usd_to_micro("0.40")
+    signer.set_epoch(2)
+    assert signer.ledger_snapshot() == []  # clean slate matches the vault (INV-6)

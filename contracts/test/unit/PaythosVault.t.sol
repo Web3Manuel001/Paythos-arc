@@ -250,9 +250,7 @@ contract AdversarialWindowsSessions is VaultTestBase {
 
     function _reauthorize(uint48 ttlHours) internal {
         PolicyTypes.Policy memory p = PolicyTypes.Policy({
-            dailyLimit: DAILY_LIMIT,
-            maxPerTx: MAX_PER_TX,
-            expiresAt: uint64(block.timestamp + ttlHours)
+            dailyLimit: DAILY_LIMIT, maxPerTx: MAX_PER_TX, expiresAt: uint64(block.timestamp + ttlHours)
         });
         vm.prank(owner);
         vault.authorizeAgent(agent, p);
@@ -319,6 +317,42 @@ contract AdversarialWindowsSessions is VaultTestBase {
         assertEq(vault.remainingAllowance(agent), 100_000);
     }
 
+    /// Reviewer regression (2026-11, INV-2 "slot collision"): hour h and hour
+    /// h−24 were aliased by a 24-slot ring, so the first claim in a new hour
+    /// overwrote the still-live h−24 bucket and a second claim in the SAME
+    /// hour saw an understated spent total. Directed PoC: $10 at hour 0, then
+    /// eight $2.50 claims at hour 24 used to settle $30 inside 24h.
+    function test_rolling_window_slot_collision_rejected() public {
+        uint256 cum;
+        VoucherTypes.Voucher memory v;
+        bytes memory s;
+        // $10 in hour 0.
+        for (uint256 i; i < 4; ++i) {
+            cum += 2_500_000;
+            (v, s) = signVoucherSimple(AGENT_KEY, cum);
+            vm.prank(merchant);
+            vault.claimVoucher(v, s);
+        }
+        // Exactly 24h later both hour 0 and hour 24 are inside the pool — the
+        // 25th slot must keep them distinct. Fill the remaining $10 of the
+        // window: 4 × $2.50, then the next drip must fail ($22.50 > $20).
+        vm.warp(block.timestamp + 24 hours);
+        for (uint256 i; i < 4; ++i) {
+            cum += 2_500_000;
+            (v, s) = signVoucherSimple(AGENT_KEY, cum);
+            vm.prank(merchant);
+            vault.claimVoucher(v, s);
+        }
+        assertEq(vault.spentToday(agent), DAILY_LIMIT);
+        assertEq(vault.remainingAllowance(agent), 0);
+
+        cum += 2_500_000;
+        (v, s) = signVoucherSimple(AGENT_KEY, cum);
+        vm.prank(merchant);
+        vm.expectRevert(VaultErrors.DailyLimitExceeded.selector);
+        vault.claimVoucher(v, s);
+    }
+
     /// INV-2 exactness at the documented hour granularity: a full-limit spend
     /// fully refills once any true 24h window no longer contains it
     /// (bucket-precise edge — no limit+limit stack in ANY 24h span).
@@ -353,9 +387,7 @@ contract AdversarialWindowsSessions is VaultTestBase {
 
         // Re-authorize WITHOUT re-allowlisting the merchant (clean-slate rule).
         PolicyTypes.Policy memory p = PolicyTypes.Policy({
-            dailyLimit: DAILY_LIMIT,
-            maxPerTx: MAX_PER_TX,
-            expiresAt: uint64(block.timestamp + 48 hours)
+            dailyLimit: DAILY_LIMIT, maxPerTx: MAX_PER_TX, expiresAt: uint64(block.timestamp + 48 hours)
         });
         vm.prank(owner);
         vault.authorizeAgent(agent, p);
@@ -454,6 +486,12 @@ contract AccessAndConfig is VaultTestBase {
         vm.prank(owner);
         vm.expectRevert(abi.encodeWithSelector(VaultErrors.FeeCapExceeded.selector, 501, 500));
         vault.setFeeBps(501);
+    }
+
+    function test_fee_floor_rejects_zero_take_rate() public {
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(VaultErrors.FeeFloorViolated.selector, 0, 1));
+        vault.setFeeBps(0);
     }
 
     function test_fee_capped_max_applies_to_next_claim() public {

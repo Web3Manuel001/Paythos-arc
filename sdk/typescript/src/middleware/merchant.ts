@@ -26,6 +26,13 @@ export interface MerchantVerifierConfig {
   /** The vault's immutable settlement token (Arc native-USDC precompile). */
   settlementToken: string;
   /**
+   * Payee binding (fail closed): the ONLY merchant address this middleware
+   * will accept vouchers for. Since vouchers settle `merchant → payee`, a
+   * voucher for any other merchant must never unlock these resources (and
+   * must never enter this payee's ledger).
+   */
+  merchantAddress: string;
+  /**
    * ACTIVE delegation epochs per agentKey (lowercase ⇒ epoch, INV-6).
    * Voucher signatures bind to the epoch; stale-epoch vouchers are rejected
    * (fail closed) even when their EIP-712 signature verifies.
@@ -83,16 +90,28 @@ interface VoucherRecord {
 export class VoucherAccumulator {
   /** merchant-side session ledger: agentKey => highest voucher (INV-M2). */
   readonly #highest = new Map<string, VoucherRecord>();
-  /** Settled cumulative per agent — the daemon reports it post-confirmation. */
-  readonly #settled = new Map<string, bigint>();
+  /**
+   * Settled cumulative per agent, SCOPED to the delegation epoch: on-chain
+   * claims reset to zero when the owner re-authorizes (INV-6 clean slate), so
+   * a settlement reported for epoch N must never mask exposure in epoch N+1.
+   */
+  readonly #settled = new Map<string, { epoch: number; amount: bigint }>();
   /** Last activity per agent (voucher accepted or settlement confirmed). */
   readonly #lastActivityAt = new Map<string, number>();
   #domain: TypedDataDomain;
 
   readonly #buckets = new Map<string, TokenBucket>();
 
+  readonly #merchant: string;
+
   constructor(protected readonly cfg: MerchantVerifierConfig) {
     this.#domain = domainFor({ network: cfg.network, vaultAddress: cfg.vaultAddress });
+    // Fail closed at construction: an unset/invalid payee would accept
+    // vouchers settling to someone else.
+    if (typeof cfg.merchantAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(cfg.merchantAddress)) {
+      throw new TypeError("merchantAddress must be a 20-byte hex address (payee binding, fail closed)");
+    }
+    this.#merchant = cfg.merchantAddress.toLowerCase();
     // Fail closed at construction: an invalid limiter config must not surface
     // as a runtime 500 under attack.
     const limit = cfg.rateLimit ?? { capacity: 100, refillPerSecond: 10 };
@@ -166,6 +185,12 @@ export class VoucherAccumulator {
     if (voucher.token !== this.cfg.settlementToken) {
       return fail(402, "voucher token is not the configured settlement token");
     }
+    // Payee binding: this middleware may only redeem vouchers made out to it.
+    // Keying the ledger by agent alone let a voucher for merchant B collide
+    // with (and unlock) merchant A's resources (reviewer 2026-11).
+    if (voucher.merchant.toLowerCase() !== this.#merchant) {
+      return fail(402, "voucher merchant is not this middleware's payee");
+    }
     const lowerKey = voucher.agentKey.toLowerCase();
     const authorizedEpoch = this.cfg.authorizedAgents.get(lowerKey);
     if (authorizedEpoch === undefined) {
@@ -203,15 +228,19 @@ export class VoucherAccumulator {
       return fail(402, "signature was NOT signed by voucher.agentKey (INV bound)");
     }
 
+    // INV-1 on the merchant side, EPOCH-SCOPED: re-authorization resets the
+    // on-chain cumulative claim to zero, so a new-epoch voucher may restart at
+    // a lower value — carrying the old high-water over would reject valid
+    // sessions and under-count fresh exposure (reviewer 2026-11).
     const current = this.#highest.get(recovered)?.voucher;
-    if (current && voucher.cumulativeAmount <= current.cumulativeAmount) {
-      // INV-1 on the merchant side too: reject stale/identical replays.
+    const epochChanged = current !== undefined && current.epoch !== voucher.epoch;
+    if (!epochChanged && current && voucher.cumulativeAmount <= current.cumulativeAmount) {
       return fail(402, "stale voucher: cumulative amount not strictly increasing");
     }
     // INV-M4 credit wall: halt the stream until a flush confirms settlement.
     // Measured as UNSETTLED exposure (cumulative − confirmed on-chain).
     const tolerance = this.cfg.creditToleranceMicro ?? 2_000_000n;
-    const settled = this.#settled.get(recovered) ?? 0n;
+    const settled = this.#settledFor(recovered, voucher.epoch);
     const unsettledCandidate = voucher.cumulativeAmount > settled ? voucher.cumulativeAmount - settled : 0n;
     if (unsettledCandidate > tolerance) {
       return {
@@ -240,9 +269,15 @@ export class VoucherAccumulator {
     };
   }
 
-  /** Granular unsettle exposure for one voucher: cumulative − confirmed settled. */
+  /** Settled amount valid ONLY for the voucher's own delegation epoch. */
+  #settledFor(agentKey: string, epoch: number): bigint {
+    const record = this.#settled.get(agentKey);
+    return record !== undefined && record.epoch === epoch ? record.amount : 0n;
+  }
+
+  /** Granular unsettled exposure for one voucher: cumulative − confirmed settled. */
   unsettledMicro(voucher: Voucher): bigint {
-    const settled = this.#settled.get(voucher.agentKey.toLowerCase()) ?? 0n;
+    const settled = this.#settledFor(voucher.agentKey.toLowerCase(), voucher.epoch);
     return voucher.cumulativeAmount > settled ? voucher.cumulativeAmount - settled : 0n;
   }
 
@@ -256,11 +291,20 @@ export class VoucherAccumulator {
   /**
    * Record an on-chain settlement (INV-M3). Called by the flush daemon after
    * confirmation; resets the credit wall so the session can continue.
+   * `epoch` defaults to the epoch of the highest known voucher for this agent.
+   * Late reports from a SUPERSEDED epoch are ignored — they cannot reduce the
+   * new epoch's exposure.
    */
-  markSettled(agentKey: string, cumulativeSettled: bigint): void {
+  markSettled(agentKey: string, cumulativeSettled: bigint, epoch?: number): void {
     const key = agentKey.toLowerCase();
-    const current = this.#settled.get(key) ?? 0n;
-    if (cumulativeSettled > current) this.#settled.set(key, cumulativeSettled);
+    const effectiveEpoch = epoch ?? this.#highest.get(key)?.voucher.epoch;
+    if (effectiveEpoch === undefined) return; // nothing to scope the report to
+    const current = this.#settled.get(key);
+    if (current !== undefined && effectiveEpoch < current.epoch) return; // stale era
+    const base = current !== undefined && current.epoch === effectiveEpoch ? current.amount : 0n;
+    if (current === undefined || current.epoch !== effectiveEpoch || cumulativeSettled > base) {
+      this.#settled.set(key, { epoch: effectiveEpoch, amount: cumulativeSettled > base ? cumulativeSettled : base });
+    }
     this.#lastActivityAt.set(key, Math.floor(Date.now() / 1000));
   }
 

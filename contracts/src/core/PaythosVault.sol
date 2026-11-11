@@ -62,17 +62,22 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     mapping(address agentKey => AgentState state) private _agents;
     /// @notice agentKey => epoch-scoped cumulative amount already settled per merchant (INV-1).
     mapping(address agentKey => mapping(address merchant => PairClaim claim)) private _claims;
-    /// @notice Destination allowlist (Module 4.5), cleared on re-authorization.
-    mapping(address agentKey => mapping(address merchant => bool allowed)) private _allowedMerchants;
-    /// @notice Enumeration for O(clear) allowlist resets in `authorizeAgent`.
-    mapping(address agentKey => address[] merchants) private _allowedMerchantList;
+    /// @notice Destination allowlist (Module 4.5). Value = the delegation epoch
+    ///      in which the owner allowed the merchant; a re-authorization bumps
+    ///      the epoch, so stale grants become invalid WITHOUT any sweep. This
+    ///      removes the unbounded clear loop (and allow/block churn growth)
+    ///      from `authorizeAgent` (reviewer 2026-11).
+    mapping(address agentKey => mapping(address merchant => uint64 allowedEpoch)) private _allowedMerchants;
 
     modifier onlyActiveAgent(address agentKey) {
         if (!_agents[agentKey].active) revert VaultErrors.UnauthorizedAgent();
         _;
     }
 
-    constructor(IERC20 settlementToken_, address treasury_) Ownable(msg.sender) EIP712("Paythos Protocol", VoucherTypes.PROTOCOL_VERSION) {
+    constructor(IERC20 settlementToken_, address treasury_)
+        Ownable(msg.sender)
+        EIP712("Paythos Protocol", VoucherTypes.PROTOCOL_VERSION)
+    {
         if (address(settlementToken_) == address(0)) revert VaultErrors.ZeroAddress();
         if (treasury_ == address(0)) revert VaultErrors.ZeroAddress(); // fail closed
         SETTLEMENT_TOKEN = settlementToken_;
@@ -118,7 +123,9 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
         if (policy.expiresAt <= block.timestamp) revert VaultErrors.SessionExpired();
         if (policy.maxPerTx > policy.dailyLimit) revert VaultErrors.MaxPerTxExceeded();
 
-        _clearAllowlist(agentKey);
+        // Allowlist grants are epoch-tagged, so the epoch bump below orphans
+        // them with no storage sweep (bounds authorizeAgent gas regardless of
+        // how many merchants were allowed/blocked before — reviewer 2026-11).
         SlidingWindow.Window memory freshWindow;
         _agents[agentKey] = AgentState({
             policy: policy,
@@ -127,17 +134,6 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
             epoch: _agents[agentKey].epoch + 1 // clean-slate: orphans stale pair claims + stale vouchers
         });
         emit VaultEvents.AgentAuthorized(agentKey, policy.dailyLimit, policy.maxPerTx, policy.expiresAt);
-    }
-
-    /// @notice Sweep every allowed-flagged merchant for `agentKey` (allowlist
-    ///      push-enumeration below keeps the list complete; INV-6 clean slate).
-    function _clearAllowlist(address agentKey) private {
-        address[] storage list = _allowedMerchantList[agentKey];
-        uint256 count = list.length;
-        for (uint256 i; i < count; ++i) {
-            delete _allowedMerchants[agentKey][list[i]];
-        }
-        delete _allowedMerchantList[agentKey];
     }
 
     /// @notice Owner kill-switch: instant on-chain revocation (INV-4 backstop).
@@ -149,19 +145,17 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     }
 
     /// @notice Add a merchant address to an agent's destination allowlist.
-    ///      Enumeration list is kept for the clean-slate sweep in authorizeAgent.
+    ///      The grant is tagged with the CURRENT delegation epoch: the next
+    ///      `authorizeAgent` invalidates it without a sweep (INV-6 clean slate).
     function allowMerchant(address agentKey, address merchant) external onlyOwner onlyActiveAgent(agentKey) {
         if (merchant == address(0)) revert VaultErrors.ZeroAddress();
-        if (!_allowedMerchants[agentKey][merchant]) {
-            _allowedMerchants[agentKey][merchant] = true;
-            _allowedMerchantList[agentKey].push(merchant);
-        }
+        _allowedMerchants[agentKey][merchant] = _agents[agentKey].epoch;
         emit VaultEvents.MerchantAllowed(agentKey, merchant);
     }
 
     /// @notice Remove a merchant from an agent's destination allowlist.
     function blockMerchant(address agentKey, address merchant) external onlyOwner {
-        _allowedMerchants[agentKey][merchant] = false;
+        delete _allowedMerchants[agentKey][merchant];
         emit VaultEvents.MerchantBlocked(agentKey, merchant);
     }
 
@@ -200,7 +194,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
         if (voucher.cumulativeAmount <= previousClaimed) revert VaultErrors.InvalidVoucherAmount();
 
         // ---- Destination allowlist (Module 4.5) ----
-        if (!_allowedMerchants[voucher.agentKey][voucher.merchant]) {
+        if (_allowedMerchants[voucher.agentKey][voucher.merchant] != agent.epoch) {
             revert VaultErrors.UnauthorizedMerchant();
         }
 
@@ -251,6 +245,11 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     function setFeeBps(uint256 newFeeBps) external onlyOwner {
         if (newFeeBps > FeeDistribution.FEE_CAP_BPS) {
             revert VaultErrors.FeeCapExceeded(newFeeBps, FeeDistribution.FEE_CAP_BPS);
+        }
+        // A zero take-rate silently disables fee routing to treasury; keep a
+        // 1 bp floor (reviewer 2026-11).
+        if (newFeeBps < FeeDistribution.FEE_FLOOR_BPS) {
+            revert VaultErrors.FeeFloorViolated(newFeeBps, FeeDistribution.FEE_FLOOR_BPS);
         }
         emit VaultEvents.FeeUpdated(_feeBps, newFeeBps);
         _feeBps = newFeeBps;

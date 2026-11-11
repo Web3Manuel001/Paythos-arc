@@ -12,8 +12,8 @@ Where Circle's Agent Stack (agents.circle.com) provides the rails — the market
 
 | Gate | Scope | State |
 | --- | --- | --- |
-| 1 | `PaythosVault.sol` + invariant fuzz suite | complete — 34 Foundry tests green |
-| 2 | Voucher channel, merchant middleware, INV-M6 throttling, verify benchmark | complete — TS 127 · Python 103 |
+| 1 | `PaythosVault.sol` + invariant fuzz suite | complete — 36 Foundry tests green |
+| 2 | Voucher channel, merchant middleware, INV-M6 throttling, verify benchmark | complete — TS 132 · Python 108 |
 | 3 | GOFER policy engine, dryRun, 3-tier gate, verifiable intent, `upto`/YOPO (INV-M5), Transactability Index, Circle Discovery firewall | complete |
 | 4 | LangChain / ElizaOS / AutoGen adapters, stdio MCP server, one-block install | complete |
 | 5 | Arc deployment + Circle CCTP funding + SDK release + grant package | next (blocked on team treasury address and PROTOCOL-OPEN-Q1) |
@@ -27,7 +27,7 @@ live-epoch claim settled.
 
 ## Architecture at a glance
 
-1. **Vault (on-chain)** — custody, policy enforcement, batch settlement. Cumulative EIP-712 vouchers; `claimVoucher()` enforces `delta > 0`, `delta <= maxPerTx`, and `spentToday + delta <= dailyLimit` over a 24-slot rolling window. Re-authorization bumps the delegation epoch, so stale vouchers never settle (INV-6).
+1. **Vault (on-chain)** — custody, policy enforcement, batch settlement. Cumulative EIP-712 vouchers; `claimVoucher()` enforces `delta > 0`, `delta <= maxPerTx`, and `spentToday + delta <= dailyLimit` over a 25-slot rolling window. Re-authorization bumps the delegation epoch, so stale vouchers never settle (INV-6).
 2. **Agent SDK (TS + Python)** — GOFER policy engine, `dryRun()` pre-flight, EIP-712 signing with cumulative ledgers, x402 v2 negotiation, `upto`/YOPO metered streaming, Transactability Index, Circle Discovery union firewall.
 3. **Merchant middleware (Express / FastAPI)** — challenge emission, in-memory voucher verification (INV-M1), highest-voucher accumulator, per-agent token-bucket throttling (INV-M6), credit wall (INV-M4), flush daemon with idempotent receipts (INV-M3).
 4. **Agent surfaces** — MCP stdio server and LangChain / ElizaOS / AutoGen / CrewAI adapters.
@@ -39,6 +39,8 @@ contracts/            Solidity (Foundry, OZ v5): vault, policy, fee routing, inv
 sdk/typescript/       TS SDK: client, signer, middleware, adapters, MCP server, ops scripts
 sdk/python/           Python SDK: pydantic mirrors, FastAPI middleware, adapters
 mcp-server/           One-block MCP install config for Claude Desktop / Cursor
+SECURITY.md           Public invariants, threat model, disclosure policy
+.github/workflows/    CI: Foundry (10k invariants), TS, Python
 docs/                 Internal protocol spec (not distributed)
 ```
 
@@ -47,9 +49,9 @@ docs/                 Internal protocol spec (not distributed)
 ### Tests
 
 ```bash
-cd contracts && forge test                    # 34 tests
-cd sdk/typescript && npm ci && npm test       # 127 tests
-cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 103 tests
+cd contracts && forge test                    # 36 tests
+cd sdk/typescript && npm ci && npm test       # 132 tests
+cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 108 tests
 ```
 
 TypeScript is strict (`exactOptionalPropertyTypes`, no `any` in exported APIs); Python mirrors the TS types 1:1 with pydantic.
@@ -85,12 +87,13 @@ app.use(paythosMerchant({
   network: "eip155:5042002",
   vaultAddress: process.env.PAYTHOS_VAULT_ADDRESS!,
   settlementToken: "0x3600000000000000000000000000000000000000",
+  merchantAddress: process.env.PAYTHOS_MERCHANT_ADDRESS!, // payee binding (fail closed)
   authorizedAgents: new Map([[agentKey, epoch]]),
   challengeFor: ({ url }) => ({ x402Version: 2, scheme: "exact", network, asset, payTo, max, resource: url }),
 }));
 ```
 
-Unpriced routes pass through only when `challengeFor` is omitted; gated routes fail closed with a 402 challenge.
+Every mount gates: no payment headers gets a 402 challenge when `challengeFor` is set, and a 402 `payment_required` rejection when it is omitted (no pass-through).
 
 ### MCP server
 

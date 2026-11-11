@@ -73,6 +73,7 @@ def accumulator_for(signer: AgentVoucherSigner) -> VoucherAccumulator:
             network=TESTNET,
             vault_address=TEST_VAULT,
             settlement_token=AR_NATIVE_USDC,
+            merchant_address=TEST_MERCHANT,
             authorized_agents={signer.agent_key.lower(): signer.epoch},
             rate_limit=(CAPACITY, REFILL),
         )
@@ -125,6 +126,7 @@ def test_throttling_is_per_agent():
             network=TESTNET,
             vault_address=TEST_VAULT,
             settlement_token=AR_NATIVE_USDC,
+            merchant_address=TEST_MERCHANT,
             authorized_agents={
                 noisy.agent_key.lower(): noisy.epoch,
                 quiet.agent_key.lower(): quiet.epoch,
@@ -161,6 +163,7 @@ async def test_fastapi_mount_returns_429_with_retry_after():
         network=TESTNET,
         vault_address=TEST_VAULT,
         settlement_token=AR_NATIVE_USDC,
+        merchant_address=TEST_MERCHANT,
         authorized_agents={signer.agent_key.lower(): signer.epoch},
         rate_limit=(CAPACITY, REFILL),
     )

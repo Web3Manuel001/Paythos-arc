@@ -5,7 +5,7 @@
  * pattern); replays of already-settled vouchers are detected and recorded as
  * no-ops — the vault's own monotonicity guard (INV-1) is the backstop.
  */
-import { Contract, type Provider, type Signer } from "ethers";
+import { Contract, Interface, type Provider, type Signer } from "ethers";
 
 import paythosVaultAbi from "../abi/paythosVault.json";
 import { Voucher } from "../types.js";
@@ -14,6 +14,8 @@ import { FlushPlan, MerchantVerifierConfig, VoucherAccumulator } from "./merchan
 export interface FlushReceipt {
   agentKey: string;
   merchant: string;
+  /** Delegation epoch the receipt settles (INV-6: cumulative resets per epoch). */
+  epoch: number;
   cumulativeAmount: string;
   txHash: string | null;
   settledAt: number;
@@ -51,9 +53,12 @@ export class JsonReceiptStore implements ReceiptStore {
     try {
       const raw = await import("node:fs/promises").then((fs) => fs.readFile(this.#path, "utf8"));
       const parsed = JSON.parse(raw) as Record<string, FlushReceipt>;
-      for (const [k, v] of Object.entries(parsed)) {
+      for (const [, v] of Object.entries(parsed)) {
         if (typeof v?.agentKey === "string" && typeof v?.cumulativeAmount === "string") {
-          map.set(k, v);
+          // Pre-v3 receipts carry no epoch: normalize to 0 so they can never
+          // mask a live-epoch settlement (fail-safe, not fail-open).
+          const receipt: FlushReceipt = { ...v, epoch: typeof v.epoch === "number" ? v.epoch : 0 };
+          map.set(receiptKey(receipt), receipt);
         }
       }
     } catch {
@@ -78,10 +83,29 @@ export class JsonReceiptStore implements ReceiptStore {
 export function receiptKey(agentKeyOrReceipt: string | FlushReceipt): string {
   if (typeof agentKeyOrReceipt === "string") return agentKeyOrReceipt;
   const r = agentKeyOrReceipt;
-  return `${r.agentKey.toLowerCase()}:${r.merchant.toLowerCase()}`;
+  // Epoch-scoped: on-chain cumulative claims reset on re-authorization, so a
+  // receipt from epoch N must not suppress settlement of epoch N+1 (INV-6).
+  return `${r.agentKey.toLowerCase()}:${r.merchant.toLowerCase()}:${r.epoch}`;
 }
 
 type SubmitResult = { kind: "submitted"; txHash: string } | { kind: "already_settled" };
+
+/**
+ * ABI-parity helper: the v3 vault Voucher tuple includes `epoch` (INV-6).
+ * Encoding through the deployed ABI rejects any missing component, so the
+ * submitter can never silently build a pre-v3 claim struct.
+ */
+export function claimVoucherArgs(voucher: Voucher): Record<string, string | bigint | number> {
+  return {
+    agentKey: voucher.agentKey,
+    merchant: voucher.merchant,
+    token: voucher.token,
+    cumulativeAmount: voucher.cumulativeAmount,
+    validUntil: voucher.validUntil,
+    epoch: voucher.epoch,
+    memo: voucher.memo,
+  };
+}
 
 export interface VaultSubmitter {
   claim(voucher: Voucher, signature: string): Promise<SubmitResult>;
@@ -109,14 +133,7 @@ export class EthersVaultSubmitter implements VaultSubmitter {
     const already = await this.#contract.claimed(voucher.agentKey, voucher.merchant);
     if (already >= voucher.cumulativeAmount) return { kind: "already_settled" };
     const tx = await this.#contract.connect(this.#wallet).claimVoucher(
-      {
-        agentKey: voucher.agentKey,
-        merchant: voucher.merchant,
-        token: voucher.token,
-        cumulativeAmount: voucher.cumulativeAmount,
-        validUntil: voucher.validUntil,
-        memo: voucher.memo,
-      },
+      claimVoucherArgs(voucher),
       signature,
     );
     const receipt = (await tx.wait()) as { status: number; hash: string } | null;
@@ -187,6 +204,7 @@ export class FlushDaemon {
       const receipt: FlushReceipt = {
         agentKey: plan.agentKey,
         merchant: plan.merchant.toLowerCase(),
+        epoch: plan.voucher.epoch,
         cumulativeAmount: plan.voucher.cumulativeAmount.toString(),
         txHash: result.kind === "submitted" ? result.txHash : null,
         settledAt: Math.floor(Date.now() / 1000),
@@ -194,15 +212,15 @@ export class FlushDaemon {
       };
       await this.#opts.receipts.save(receipt); // persisted ONLY after confirmation
       received.set(key, receipt);
-      accumulator?.markSettled(plan.agentKey, plan.voucher.cumulativeAmount);
+      accumulator?.markSettled(plan.agentKey, plan.voucher.cumulativeAmount, plan.voucher.epoch);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("InvalidVoucherAmount")) {
+      if (isInvalidVoucherAmount(err)) {
         // Vault rejected as stale ⇒ something settled it before us. Record
         // without a tx hash so the receipt still blocks re-submission.
         const receipt: FlushReceipt = {
           agentKey: plan.agentKey,
           merchant: plan.merchant.toLowerCase(),
+          epoch: plan.voucher.epoch,
           cumulativeAmount: plan.voucher.cumulativeAmount.toString(),
           txHash: null,
           settledAt: Math.floor(Date.now() / 1000),
@@ -210,7 +228,7 @@ export class FlushDaemon {
         };
         await this.#opts.receipts.save(receipt);
         (await this.#loaded()).set(key, receipt);
-        accumulator?.markSettled(plan.agentKey, plan.voucher.cumulativeAmount);
+        accumulator?.markSettled(plan.agentKey, plan.voucher.cumulativeAmount, plan.voucher.epoch);
         return;
       }
       const onError = this.#opts.onError ?? defaultOnError;
@@ -221,8 +239,37 @@ export class FlushDaemon {
   }
 }
 
+const vaultInterface = new Interface(paythosVaultAbi);
+
+/**
+ * Detect the vault's INV-1 rejection even when ethers cannot map the custom
+ * error into the message (v6 surfaces it as raw revert data). This keeps
+ * exactly-once bookkeeping reliable on a settlement race.
+ */
+function isInvalidVoucherAmount(err: unknown): boolean {
+  const e = err as {
+    data?: unknown;
+    message?: unknown;
+    shortMessage?: unknown;
+    info?: { error?: { data?: unknown } };
+    error?: { data?: unknown };
+  };
+  const candidates = [e?.data, e?.info?.error?.data, e?.error?.data];
+  for (const data of candidates) {
+    if (typeof data !== "string" || !data.startsWith("0x")) continue;
+    try {
+      const decoded = vaultInterface.parseError(data);
+      if (decoded?.name === "InvalidVoucherAmount") return true;
+    } catch {
+      /* not a vault custom error — fall through to text matching */
+    }
+  }
+  const text = `${typeof e?.message === "string" ? e.message : ""} ${typeof e?.shortMessage === "string" ? e.shortMessage : ""}`;
+  return text.includes("InvalidVoucherAmount");
+}
+
 function receiptKeyOfPlan(plan: FlushPlan): string {
-  return `${plan.agentKey.toLowerCase()}:${plan.merchant.toLowerCase()}`;
+  return `${plan.agentKey.toLowerCase()}:${plan.merchant.toLowerCase()}:${plan.voucher.epoch}`;
 }
 
 function defaultOnError(err: unknown, plan: FlushPlan): void {

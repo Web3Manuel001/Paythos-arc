@@ -110,7 +110,7 @@ contract PaythosVaultInvariants is Test {
     function invariant_slidingWindowExactness() public view {
         uint256 count = handler.claimHistoryCount();
         for (uint256 i; i < count; ++i) {
-            (uint64 atI, uint64 agentI, ) = handler.claimRecord(i);
+            (uint64 atI, uint64 agentI,) = handler.claimRecord(i);
             uint256 span;
             for (uint256 j; j < count; ++j) {
                 (uint64 atJ, uint64 agentJ, uint256 amountJ) = handler.claimRecord(j);
@@ -119,8 +119,7 @@ contract PaythosVaultInvariants is Test {
                     if (atJ > atI ? atJ - atI < 25 hours : atI - atJ < 25 hours) span += amountJ;
                 }
             }
-            assertLe(span, DAILY_LIMIT_LIMIT(),
-                "INV-2 VIOLATION: more than dailyLimit settled inside a 24h span");
+            assertLe(span, DAILY_LIMIT_LIMIT(), "INV-2 VIOLATION: more than dailyLimit settled inside a 24h span");
         }
     }
 

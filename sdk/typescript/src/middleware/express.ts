@@ -3,11 +3,10 @@
  * Thin: translate req/res into the framework-agnostic VoucherAccumulator.
  * Peer-optional: only works when `express` is installed (package.json peers).
  *
- * Gating contract (reviewer catch): when `challengeFor` is configured, a
- * request WITHOUT payment headers gets a 402 + x402 PAYMENT-REQUIRED
- * challenge — never a free pass. Without `challengeFor` the mount cannot
- * know what a resource costs, so unpriced routes pass through (opt-in
- * legacy behavior; gated routes MUST configure the factory).
+ * Gating contract (fail closed): a request WITHOUT payment headers gets a
+ * 402 + x402 PAYMENT-REQUIRED challenge when `challengeFor` is configured.
+ * Without the factory the mount cannot price the resource, so it still
+ * rejects with 402 `payment_required` — there is NO pass-through mode.
  */
 import type { Request, Response, NextFunction } from "express";
 import {
@@ -42,7 +41,15 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
 
     if (!hasPaymentHeaders(headers)) {
       if (!challengeFor) {
-        next(); // legacy/unpriced mount: no pricing information → pass through
+        // Fail closed: without a challenge factory there is no way to price
+        // the route, so an unpaid request must never reach the handler
+        // (reviewer 2026-11: legacy mounts passed everything through free).
+        res.status(402);
+        res.setHeader("accept-payment", "PAYTHOS/x402v2");
+        res.json({
+          error: "payment_required",
+          detail: "challengeFor not configured — priced routes require payment (fail closed)",
+        });
         return;
       }
       // GATED route: no proof of payment ⇒ x402 challenge (fail closed).

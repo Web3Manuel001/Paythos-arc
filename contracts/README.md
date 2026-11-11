@@ -5,7 +5,7 @@ no upgradeability, no custody beyond the vault's own USDC balance.
 
 ```text
 src/core/PaythosVault.sol      custody + policy enforcement + batch settlement
-src/libraries/SlidingWindow.sol  24-slot rolling daily window (exact hour boundaries)
+src/libraries/SlidingWindow.sol  25-slot rolling daily window (exact hour boundaries)
 src/libraries/FeeDistribution.sol  protocol fee split (default 150 bps, cap 5%)
 src/types/PolicyTypes.sol     dailyLimit / maxPerTx / expiresAt + allowlist
 src/types/VoucherTypes.sol    cumulative EIP-712 voucher (epoch-bound, INV-6)
@@ -17,7 +17,7 @@ test/invariant/               fuzz invariants (INV-1 … INV-6)
 
 ```bash
 forge build
-forge test            # 34 tests incl. invariant fuzz campaign
+forge test            # 36 tests incl. invariant fuzz campaign
 forge fmt
 ```
 

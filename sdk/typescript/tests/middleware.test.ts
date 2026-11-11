@@ -28,6 +28,7 @@ function pair(priceMicro: bigint, settleToken = AR_USDC) {
     network: TESTNET,
     vaultAddress: TEST_VAULT,
     settlementToken: settleToken,
+    merchantAddress: TEST_MERCHANT,
     authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
   });
   return { signer, challenge, prompt, memo, merchant };
@@ -88,6 +89,7 @@ describe("VoucherAccumulator — full membrane", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_USDC,
+      merchantAddress: TEST_MERCHANT,
       authorizedAgents: new Map([["0x7777777777777777777777777777777777777777", 1]]),
     });
     const signed = await signer.recordAndSign(challenge.payTo, parseUsdToMicro("0.10"), memo);
@@ -111,6 +113,7 @@ describe("VoucherAccumulator — full membrane", () => {
       network: TESTNET,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_USDC,
+      merchantAddress: TEST_MERCHANT,
       authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       creditToleranceMicro: parseUsdToMicro("1"),
     });
@@ -128,6 +131,7 @@ describe("VoucherAccumulator — full membrane", () => {
       network: TESTNET as const,
       vaultAddress: TEST_VAULT,
       settlementToken: AR_USDC,
+      merchantAddress: TEST_MERCHANT,
       authorizedAgents: new Map([[signer.agentKey.toLowerCase(), 1]]),
       creditToleranceMicro: parseUsdToMicro("10"),
       onFlushReady,
