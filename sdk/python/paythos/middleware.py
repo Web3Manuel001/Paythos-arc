@@ -100,6 +100,13 @@ class VoucherAccumulator:
             SigningDomainArgs(network=config.network, vault_address=config.vault_address)
         )
         self._buckets: dict[str, TokenBucket] = {}
+        # Fail closed at construction: invalid limiter config must not surface
+        # as a runtime 500 under attack.
+        capacity, refill = config.rate_limit
+        if not isinstance(capacity, int) or capacity < 1:
+            raise ValueError(f"rate_limit capacity must be an int >= 1 (got {capacity!r})")
+        if refill <= 0:
+            raise ValueError(f"rate_limit refill must be > 0 (got {refill!r})")
 
     @property
     def domain(self) -> dict[str, object]:
@@ -158,15 +165,6 @@ class VoucherAccumulator:
         return bucket
 
     def _verify_core(self, voucher: Voucher, signature: str) -> VerifyOutcome:
-        # INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
-        throttle = self._limit_for(voucher.agent_key).try_consume()
-        if not throttle.allowed:
-            return VerifyOutcome(
-                ok=False,
-                status=429,
-                reason=f"local rate limit — retry in {throttle.retry_after_seconds}s (INV-M6)",
-                retry_after_seconds=throttle.retry_after_seconds,
-            )
         if voucher.token.lower() != self.cfg.settlement_token.lower():
             return VerifyOutcome(
                 ok=False, status=402, reason="voucher token is not the configured settlement token"
@@ -184,6 +182,16 @@ class VoucherAccumulator:
                 ok=False,
                 status=402,
                 reason="voucher epoch does not match the agent's active delegation (INV-6)",
+            )
+        # INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
+        # After authorization ⇒ the bucket map stays bounded for unknown keys.
+        throttle = self._limit_for(voucher.agent_key).try_consume()
+        if not throttle.allowed:
+            return VerifyOutcome(
+                ok=False,
+                status=429,
+                reason=f"local rate limit — retry in {throttle.retry_after_seconds}s (INV-M6)",
+                retry_after_seconds=throttle.retry_after_seconds,
             )
 
         try:

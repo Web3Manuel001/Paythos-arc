@@ -93,6 +93,15 @@ export class VoucherAccumulator {
 
   constructor(protected readonly cfg: MerchantVerifierConfig) {
     this.#domain = domainFor({ network: cfg.network, vaultAddress: cfg.vaultAddress });
+    // Fail closed at construction: an invalid limiter config must not surface
+    // as a runtime 500 under attack.
+    const limit = cfg.rateLimit ?? { capacity: 100, refillPerSecond: 10 };
+    if (!Number.isFinite(limit.capacity) || limit.capacity < 1) {
+      throw new RangeError(`rateLimit.capacity must be >= 1 (got ${String(limit.capacity)})`);
+    }
+    if (!Number.isFinite(limit.refillPerSecond) || limit.refillPerSecond <= 0) {
+      throw new RangeError(`rateLimit.refillPerSecond must be > 0 (got ${String(limit.refillPerSecond)})`);
+    }
   }
 
   /** Merchant-side challenge emission (docs/PROTOCOL.md §3.1). */
@@ -154,15 +163,6 @@ export class VoucherAccumulator {
 
   /** Shared verification pipeline used by both wire formats. */
   #verifyCore(voucher: Voucher, signature: string): VerifyOutcome {
-    // INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
-    const throttle = this.#limitFor(voucher.agentKey).tryConsume();
-    if (!throttle.allowed) {
-      return fail(
-        429,
-        `local rate limit — retry in ${throttle.retryAfterSeconds}s`,
-        throttle.retryAfterSeconds,
-      );
-    }
     if (voucher.token !== this.cfg.settlementToken) {
       return fail(402, "voucher token is not the configured settlement token");
     }
@@ -175,6 +175,17 @@ export class VoucherAccumulator {
     // here, even though its EIP-712 signature verifies perfectly.
     if (voucher.epoch !== authorizedEpoch) {
       return fail(402, "voucher epoch does not match the agent's active delegation (INV-6)");
+    }
+    // INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
+    // Placement AFTER authorization keeps the bucket map bounded — unknown
+    // agentKey strings never allocate state.
+    const throttle = this.#limitFor(voucher.agentKey).tryConsume();
+    if (!throttle.allowed) {
+      return fail(
+        429,
+        `local rate limit — retry in ${throttle.retryAfterSeconds}s`,
+        throttle.retryAfterSeconds,
+      );
     }
 
     // <5ms: recover signer in memory (no RPC — INV-M1).

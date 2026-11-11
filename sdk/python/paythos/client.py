@@ -108,6 +108,8 @@ class PaythosClient:
         self.network = network
         self.allowlist = allowlist
         self.holds = HoldLedger()
+        # Per-client nonce: identical url+prompt streams in the same ms must not collide.
+        self._stream_seq = 0
         self._gofer = GoferPolicyEngine(tiers or TierThresholds())
         self._transactability = transactability or (lambda _merchant: True)
         self._transactability_oracle = transactability
@@ -338,7 +340,12 @@ class PaythosClient:
                 )
 
         # ---- HOLD (internal lock — the ceiling is NEVER signed here) ----
-        stream_id = stream_id_for(attempt.url, prompt, int(time.time() * 1000))
+        stream_id = stream_id_for(
+            attempt.url,
+            prompt,
+            int(time.time() * 1000) * 1000 + (self._stream_seq % 1000),
+        )
+        self._stream_seq += 1
         self.holds.lock(stream_id, challenge.pay_to, ceiling)
 
         # ---- open the stream UNPAID ----

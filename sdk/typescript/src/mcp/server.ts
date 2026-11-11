@@ -105,6 +105,12 @@ function envOrDie(name: string): string {
 const EPHEMERAL_KEY = envOrDie("PAYTHOS_EPHEMERAL_KEY");
 const VAULT_ADDRESS = envOrDie("PAYTHOS_VAULT_ADDRESS");
 const NETWORK = (process.env.PAYTHOS_NETWORK ?? "eip155:5042002") as keyof typeof CHAIN_REGISTRY;
+if (!Object.prototype.hasOwnProperty.call(CHAIN_REGISTRY, NETWORK)) {
+  process.stderr.write(
+    `paythos-mcp: unknown PAYTHOS_NETWORK "${String(NETWORK)}" (expected ${Object.keys(CHAIN_REGISTRY).join(" | ")})\n`,
+  );
+  process.exit(2);
+}
 const ALLOWLIST = new Set<string>(
   (process.env.PAYTHOS_MERCHANTS ? process.env.PAYTHOS_MERCHANTS.split(",") : [])
     .map((s) => s.trim().toLowerCase())
@@ -215,8 +221,8 @@ function dispatch(req: JsonRpcRequest): string {
       if (result instanceof Promise) {
         result.then(
           (payload) => {
-            process.stdout.write(toolResult(id, payload));
             persistLedger();
+            process.stdout.write(toolResult(id, payload));
           },
           (err) => {
             const message = err instanceof PaythosError ? `${err.code}: ${err.message}` : String(err);
@@ -346,8 +352,8 @@ rl.on("line", (line) => {
     return;
   }
   const response = dispatch(req);
-  process.stdout.write(response);
   persistLedger();
+  process.stdout.write(response);
 });
 
 // Keep the async tool promises unhandled-safe: MCP stdio is synchronous per line;

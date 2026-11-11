@@ -30,6 +30,17 @@ MERCHANT = "0x1234567890123456789012345678901234567890"  # TEST_MERCHANT
 HEALTHY = MerchantObservation(ok=True, latency_ms=0, status=200, valid=True)
 
 
+def test_fail_closed_configuration():
+    from paythos.transactability import TransactabilityConfig, TransactabilityIndex
+
+    with pytest.raises(ValueError):
+        TransactabilityIndex(config=TransactabilityConfig(latency_budget_ms=0))
+    with pytest.raises(ValueError):
+        TransactabilityIndex(config=TransactabilityConfig(window_size=0))
+    with pytest.raises(ValueError):
+        TransactabilityIndex(config=TransactabilityConfig(min_samples=0))
+
+
 def test_all_healthy_scores_100_and_allows():
     index = TransactabilityIndex()
     for _ in range(5):

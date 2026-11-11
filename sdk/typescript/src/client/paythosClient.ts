@@ -122,6 +122,8 @@ export class PaythosClient {
   readonly #gofer: GoferPolicyEngine;
   readonly #bucket: TokenBucket;
   readonly #holds = new HoldLedger();
+  /** Per-client nonce: identical url+prompt streams in the same ms must not collide. */
+  #streamSeq = 0;
   #allowanceMicro: bigint;
 
   constructor(
@@ -280,7 +282,11 @@ export class PaythosClient {
     }
 
     // ---- HOLD (internal lock — the ceiling is NEVER signed here) ----
-    const streamId = HoldLedger.streamIdFor(attempt.url, prompt, Date.now());
+    const streamId = HoldLedger.streamIdFor(
+      attempt.url,
+      prompt,
+      Date.now() * 1000 + (this.#streamSeq++ % 1000),
+    );
     this.#holds.lock(streamId, challenge.payTo, ceiling);
 
     // ---- 4. open the stream UNPAID ----

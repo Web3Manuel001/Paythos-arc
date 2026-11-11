@@ -1,28 +1,120 @@
 # Paythos Protocol
 
-**Enterprise spend-control and governance layer for AI agents transacting in USDC on Arc L1.** Cross-chain stablecoin funding arrives via Circle CCTP (burn-and-mint through Circle's rails), so USDC from other chains can fund a Paythos vault without Paythos ever operating a bridge.
+**Enterprise spend-control and governance layer for AI agents transacting in USDC on Arc L1.** Cross-chain stablecoin funding arrives via Circle CCTP (burn-and-mint through Circle's rails), so other chains' USDC can fund a Paythos vault without Paythos ever operating a bridge.
 
-Paythos sits between an AI agent and its money. It converts raw agent wallets (or Circle Agent Wallets) into policy-enforced **Paythos Vaults**: non-custodial capital with mathematically enforced daily ceilings, per-transaction bounds, session expiry, three-tier human approval gates, and a signed-every-thought verifiable-intent audit trail.
+Paythos sits between an AI agent and its money. It converts raw agent wallets (or Circle Agent Wallets) into policy-enforced **Paythos Vaults**: non-custodial capital with on-chain daily ceilings, per-transaction bounds, session expiry, three-tier human approval gates, and a signed-every-thought verifiable-intent audit trail.
 
-Where Circle's Agent Stack (agents.circle.com) provides the rails — the marketplace, the currency, the nanopayments — Paythos provides the missing buy-side defense layer: pre-spend simulation, counterparty scoring, monotonic state-channel settlement, and enterprise policy enforcement.
+Where Circle's Agent Stack (agents.circle.com) provides the rails — the marketplace, the currency, the nanopayments — Paythos provides the buy-side defense layer: pre-spend simulation, counterparty scoring, monotonic state-channel settlement, and enterprise policy enforcement.
 
 ## Status
 
-**Status: build in progress — Gates 1–2 complete, live E2E passed on Arc Testnet.** The protocol specification suite (built from the Paythos Protocol v2.0.0-RFC, now extended to PROTOCOL v3 with epoch-bound vouchers) lives in `docs/` and is internal — it is intentionally not distributed in the public repo. Implementation follows the gated sequence in `docs/ROADMAP.md`: the `PaythosVault.sol` invariant suite (Gate 1) and the TypeScript + Python SDK/middleware/MCP/adapter surface (Gate 2) are complete and green, with a live Arc Testnet end-to-end deployment/claim recorded in-tree. What ships publicly is the code; the spec is supplied at deployment time by the team.
+**Gates 1–4 complete; Gate 5 (Arc deployment, CCTP funding, public release, grant package) next.** The protocol spec suite lives in `docs/` and is internal — it is intentionally not distributed in this repo. Implementation follows the gated sequence in `docs/ROADMAP.md`.
 
-| Document | Contents |
-| --- | --- |
-| `docs/ARCHITECTURE.md` (internal, not distributed) | 5-layer system topology, module-by-module specification |
-| `docs/PROTOCOL.md` (internal) | x402 v2 semantics, EIP-712 voucher schema, transport rules |
-| `docs/SECURITY.md` (internal) | Threat model, formal security invariants, attack scenarios |
-| `docs/CIRCLE-INTEGRATION.md` (internal) | agents.circle.com symbiosis, Discovery API ingestion, grant positioning |
-| `docs/ROADMAP.md` (internal) | Gate 1→5 implementation sequence with acceptance criteria |
-| [AGENTS.md](AGENTS.md) | Repo conventions, toolchain, chain constants |
+| Gate | Scope | State |
+| --- | --- | --- |
+| 1 | `PaythosVault.sol` + invariant fuzz suite | complete — 34 Foundry tests green |
+| 2 | Voucher channel, merchant middleware, INV-M6 throttling, verify benchmark | complete — TS 127 · Python 103 |
+| 3 | GOFER policy engine, dryRun, 3-tier gate, verifiable intent, `upto`/YOPO (INV-M5), Transactability Index, Circle Discovery firewall | complete |
+| 4 | LangChain / ElizaOS / AutoGen adapters, stdio MCP server, one-block install | complete |
+| 5 | Arc deployment + Circle CCTP funding + SDK release + grant package | next (blocked on team treasury address and PROTOCOL-OPEN-Q1) |
 
-## Design in one paragraph
+Live evidence on Arc Testnet (PROTOCOL v3, epoch-bound vouchers): vault
+`0xD69eA0ab9671549095D473E5176579ee879373Ce` (deploy tx `0x69e20da8…a7895`);
+epoch-synced `claimVoucher` tx `0xa874d4f291be7a1eb2210e9c7ebda4f765e2f3bab8998095af7d17e597876c69`
+(block 71523116, 150 bps fee, replay rejected), plus the live INV-6 proof: re-authorization
+bumped epoch 1→2, a stale-epoch voucher reverted `SessionEpochMismatch`, and the
+live-epoch claim settled.
 
-A human treasurer deposits USDC into `PaythosVault.sol` and delegates an ephemeral key with a policy struct (`dailyLimit`, `maxPerTx`, TTL). An agent runtime holding that key pays merchants over HTTP using x402 v2: merchants issue `402` challenges, the agent signs cumulative EIP-712 vouchers **off-chain at zero gas**, merchants verify signatures in memory and serve the data, and vouchers batch-flush to the vault for one on-chain settlement per few dollars accumulated. Prompt-injection attacks die at three independent layers: SDK policy checks, bytecode limits, and human review gates. Every spend carries a `keccak256` hash of the prompt that caused it, stamped as an Arc structured memo for enterprise accounting.
+## Architecture at a glance
+
+1. **Vault (on-chain)** — custody, policy enforcement, batch settlement. Cumulative EIP-712 vouchers; `claimVoucher()` enforces `delta > 0`, `delta <= maxPerTx`, and `spentToday + delta <= dailyLimit` over a 24-slot rolling window. Re-authorization bumps the delegation epoch, so stale vouchers never settle (INV-6).
+2. **Agent SDK (TS + Python)** — GOFER policy engine, `dryRun()` pre-flight, EIP-712 signing with cumulative ledgers, x402 v2 negotiation, `upto`/YOPO metered streaming, Transactability Index, Circle Discovery union firewall.
+3. **Merchant middleware (Express / FastAPI)** — challenge emission, in-memory voucher verification (INV-M1), highest-voucher accumulator, per-agent token-bucket throttling (INV-M6), credit wall (INV-M4), flush daemon with idempotent receipts (INV-M3).
+4. **Agent surfaces** — MCP stdio server and LangChain / ElizaOS / AutoGen / CrewAI adapters.
+
+## Repository layout
+
+```text
+contracts/            Solidity (Foundry, OZ v5): vault, policy, fee routing, invariants
+sdk/typescript/       TS SDK: client, signer, middleware, adapters, MCP server, ops scripts
+sdk/python/           Python SDK: pydantic mirrors, FastAPI middleware, adapters
+mcp-server/           One-block MCP install config for Claude Desktop / Cursor
+docs/                 Internal protocol spec (not distributed)
+```
+
+## Quickstart
+
+### Tests
+
+```bash
+cd contracts && forge test                    # 34 tests
+cd sdk/typescript && npm ci && npm test       # 127 tests
+cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 103 tests
+```
+
+TypeScript is strict (`exactOptionalPropertyTypes`, no `any` in exported APIs); Python mirrors the TS types 1:1 with pydantic.
+
+### Agent pays an x402 resource (TypeScript)
+
+```ts
+import { AgentVoucherSigner, PaythosClient } from "@paythos/sdk";
+
+const signer = new AgentVoucherSigner({
+  privateKey: process.env.PAYTHOS_EPHEMERAL_KEY!,
+  domain: { network: "eip155:5042002", vaultAddress: process.env.PAYTHOS_VAULT_ADDRESS! },
+  epoch: 1,
+});
+const client = new PaythosClient(signer, {
+  signer,
+  network: "eip155:5042002",
+  allowlist: new Set([process.env.PAYTHOS_MERCHANT!]),
+});
+
+const result = await client.fetchWithX402({ url: "https://api.example.com/premium", prompt });
+// result.ok ? result.data : result.error.code / detail
+```
+
+Metered streaming (`scheme: "upto"`) uses `client.streamWithX402(...)`: the client holds only the ceiling, signs an **exact-consumption** voucher at completion, and signs nothing when the stream fails (INV-M5).
+
+### Merchant gating (Express)
+
+```ts
+import { paythosMerchant } from "@paythos/sdk";
+
+app.use(paythosMerchant({
+  network: "eip155:5042002",
+  vaultAddress: process.env.PAYTHOS_VAULT_ADDRESS!,
+  settlementToken: "0x3600000000000000000000000000000000000000",
+  authorizedAgents: new Map([[agentKey, epoch]]),
+  challengeFor: ({ url }) => ({ x402Version: 2, scheme: "exact", network, asset, payTo, max, resource: url }),
+}));
+```
+
+Unpriced routes pass through only when `challengeFor` is omitted; gated routes fail closed with a 402 challenge.
+
+### MCP server
+
+Copy the block in [`mcp-server/paythos.mcp.json`](mcp-server/paythos.mcp.json) into Claude Desktop / Cursor and set env vars only — no config code. Tools: `get_agent_budget`, `dry_run_errand`, `settle_invoice`, `query_x402_resource`. Run locally with `cd sdk/typescript && npm run mcp`.
+
+## Chain constants
+
+| Network | CAIP-2 | Chain ID | USDC |
+| --- | --- | --- | --- |
+| Arc Testnet | `eip155:5042002` | 5042002 | `0x3600000000000000000000000000000000000000` (native precompile) |
+| Arc Mainnet | `arc:mainnet` | 5042 | unverified → SDK stays fail-closed (PROTOCOL-OPEN-Q1) |
+
+RPC testnet: `https://rpc.testnet.arc.io` · explorer: `https://explorer.testnet.arc.io` / `https://testnet.arcscan.app`.
+
+## Security model (summary)
+
+- **Non-custodial** — owner keeps emergency withdrawal; no pooled liquidity, no yield, no rehypothecation.
+- **Fail closed** — policy ambiguity halts; there is no default-allow path.
+- **Deltas enforced on-chain** — never trust the client for ceilings, monotonicity, expiry, or epoch.
+- **YOPO** — no voucher for unrendered tokens or failed streams; every failure releases the hold.
+- **Secrets hygiene** — ephemeral keys come only from environment variables and are never logged or committed.
+
+Rebuild the verification baseline with `npm run bench:verify -- 2000 --enforce` on release hardware (the harness measures the in-memory verify path; p99 is ecrecover-bound).
 
 ## Prior work
 
-The original demo repository (`github.com/Web3Manuel001/paythos`) validated the EIP-712 voucher flow end-to-end on Arc Testnet (vault `0xa9d5525BE440831c64695d30c915DF303E0151EF`, native USDC at `0x3600...0000`). This repository is a **fresh build** targeting the v2.0.0-RFC spec above; the demo is reference-only.
+The original demo repository (`github.com/Web3Manuel001/paythos`) validated the EIP-712 voucher flow end-to-end on Arc Testnet (vault `0xa9d5525BE440831c64695d30c915DF303E0151EF`, native USDC at `0x3600...0000`). This repository is a **fresh build** targeting the v3 spec; the demo is reference-only and is not migrated wholesale.

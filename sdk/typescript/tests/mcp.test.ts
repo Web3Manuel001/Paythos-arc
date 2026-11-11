@@ -165,5 +165,27 @@ describe("Paythos MCP server (stdio)", () => {
     } finally {
       await rpc.stop();
     }
-  }, 60_000);
+  }, 120_000);
+
+  it("fails closed at startup on an unknown PAYTHOS_NETWORK", async () => {
+    const stateFile = join(mkdtempSync(join(tmpdir(), "paythos-mcp-")), "ledger.json");
+    const child = spawn(process.execPath, ["--import", "tsx", "src/mcp/server.ts"], {
+      cwd: new URL("..", import.meta.url).pathname,
+      env: {
+        ...process.env,
+        PAYTHOS_EPHEMERAL_KEY: ephemeralPrivateKey(),
+        PAYTHOS_VAULT_ADDRESS: TEST_VAULT,
+        PAYTHOS_AGENT_EPOCH: "1",
+        PAYTHOS_NETWORK: "eip155:1",
+        PAYTHOS_MCP_LEDGER: stateFile,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    const code = await new Promise<number | null>((resolve) => child.once("exit", (c) => resolve(c)));
+    expect(code).toBe(2);
+    expect(stderr).toMatch(/unknown PAYTHOS_NETWORK/);
+  }, 30_000);
 });

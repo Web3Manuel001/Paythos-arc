@@ -19,6 +19,14 @@ const MERCHANT = TEST_MERCHANT.toLowerCase();
 
 const healthy = { ok: true, latencyMs: 0, status: 200, valid: true };
 
+describe("TransactabilityIndex — fail-closed configuration", () => {
+  it("rejects a zero-latency-budget or empty window", () => {
+    expect(() => new TransactabilityIndex({ config: { latencyBudgetMs: 0 } })).toThrow(/latencyBudgetMs/);
+    expect(() => new TransactabilityIndex({ config: { windowSize: 0 } })).toThrow(/windowSize/);
+    expect(() => new TransactabilityIndex({ config: { minSamples: 0 } })).toThrow(/minSamples/);
+  });
+});
+
 describe("TransactabilityIndex — scoring", () => {
   it("all-healthy history scores 100 and allows", () => {
     const index = new TransactabilityIndex();

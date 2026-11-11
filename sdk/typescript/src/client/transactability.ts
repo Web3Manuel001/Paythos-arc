@@ -101,6 +101,17 @@ export class TransactabilityIndex implements TransactabilityOracle {
 
   constructor(opts: { config?: Partial<TransactabilityConfig>; registry?: TransactabilityRegistry } = {}) {
     this.#config = { ...DEFAULT_TRANSACTABILITY_CONFIG, ...opts.config };
+    // Fail closed at construction: a zero-latency-budget or empty window
+    // would silently disable the defence instead of raising.
+    if (!Number.isFinite(this.#config.windowSize) || this.#config.windowSize < 1) {
+      throw new RangeError(`transactability windowSize must be >= 1 (got ${String(this.#config.windowSize)})`);
+    }
+    if (!Number.isFinite(this.#config.latencyBudgetMs) || this.#config.latencyBudgetMs <= 0) {
+      throw new RangeError(`transactability latencyBudgetMs must be > 0 (got ${String(this.#config.latencyBudgetMs)})`);
+    }
+    if (!Number.isFinite(this.#config.minSamples) || this.#config.minSamples < 1) {
+      throw new RangeError(`transactability minSamples must be >= 1 (got ${String(this.#config.minSamples)})`);
+    }
     this.#registry = opts.registry;
   }
 

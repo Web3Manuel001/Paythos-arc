@@ -70,6 +70,17 @@ The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the cur
 5. **Secrets hygiene.** Ephemeral keys come from environment variables (`PAYTHOS_EPHEMERAL_KEY`, `PAYTHOS_VAULT_ADDRESS`, …). Nothing key-related is ever logged, committed, or embedded. EIP-712 messages may be logged; signatures of real spend cannot be replayed across sessions.
 6. **Fee switch** — protocol fee capped at 5%, default 150 bps, deducted at source inside `claimVoucher()`, routed atomically to treasury.
 
+## Verification (run before every commit)
+
+```bash
+cd contracts && forge test                        # 34 tests (unit + invariant fuzz)
+cd sdk/typescript && npx tsc --noEmit && npm test # 127 tests, strict TS
+cd sdk/python && .venv/bin/python -m pytest tests # 103 tests (asyncio_mode=auto)
+cd sdk/typescript && npm run bench:verify -- 2000 --enforce   # release hardware only
+```
+
+Keep the three suites green; add an invariant-referencing test for every guard you touch.
+
 ## Code Style
 
 - TypeScript: strict, no `any` in exported APIs, ESM, named exports. Route errors as typed results, not thrown strings.

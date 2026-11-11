@@ -21,6 +21,7 @@ from paythos import (
     VoucherAccumulator,
     paythos_fastapi_middleware,
 )
+from paythos.rate_limit import TokenBucket
 from paythos.signer import build_voucher_headers
 
 from conftest import AR_NATIVE_USDC, TEST_MERCHANT, TEST_VAULT, TESTNET, ephemeral_private_key
@@ -78,6 +79,13 @@ def accumulator_for(signer: AgentVoucherSigner) -> VoucherAccumulator:
     )
 
 
+def test_token_bucket_rejects_fail_open_configuration():
+    with pytest.raises(ValueError):
+        TokenBucket(capacity=0)
+    with pytest.raises(ValueError):
+        TokenBucket(capacity=10, refill_per_second=0)
+
+
 def test_500_memory_verifications_throttle_with_429():
     signer = make_signer()
     headers = signed_burst_headers(signer)
@@ -133,6 +141,17 @@ def test_throttling_is_per_agent():
     assert quiet_signed.voucher is not None and quiet_signed.signature is not None
     quiet_headers = build_voucher_headers(quiet_signed.voucher, quiet_signed.signature)
     assert accumulator.verify_payment(quiet_headers).status == 200
+
+
+def test_unknown_agent_flood_returns_402_without_allocating_buckets():
+    authorized = make_signer()
+    stranger = make_signer()  # valid keypair, NOT in authorized_agents
+    headers = signed_burst_headers(stranger)
+    accumulator = accumulator_for(authorized)
+
+    statuses = [accumulator.verify_payment(h).status for h in headers]
+    assert all(status == 402 for status in statuses)
+    assert 429 not in statuses  # no bucket allocated for unknown keys
 
 
 async def test_fastapi_mount_returns_429_with_retry_after():

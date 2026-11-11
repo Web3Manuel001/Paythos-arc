@@ -25,6 +25,10 @@ class TokenBucket:
         *,
         clock: "callable[[], float] | None" = None,
     ) -> None:
+        if not isinstance(capacity, int) or capacity < 1:
+            raise ValueError(f"token bucket capacity must be an int >= 1 (got {capacity!r})")
+        if not isinstance(refill_per_second, (int, float)) or refill_per_second <= 0:
+            raise ValueError(f"token bucket refill_per_second must be > 0 (got {refill_per_second!r})")
         self.capacity = capacity
         self.refill_per_second = refill_per_second
         self._tokens = float(capacity)

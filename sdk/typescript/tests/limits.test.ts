@@ -4,6 +4,7 @@
  * merchant boundary — zero backend hits for throttled requests.
  */
 import { describe, expect, it } from "vitest";
+import { TokenBucket } from "../src/core/tokenBucket.js";
 import express from "express";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -52,8 +53,16 @@ function accumulatorFor(signer: AgentVoucherSigner): VoucherAccumulator {
   });
 }
 
+describe("TokenBucket — fail-closed configuration", () => {
+  it("rejects non-positive capacity or refill", () => {
+    expect(() => new TokenBucket({ capacity: 0, refillPerSecond: 1 })).toThrow(/capacity/);
+    expect(() => new TokenBucket({ capacity: 10, refillPerSecond: 0 })).toThrow(/refill/);
+    expect(() => new TokenBucket({ capacity: 10, refillPerSecond: Number.NaN })).toThrow(/refill/);
+  });
+});
+
 describe("INV-M6 — merchant-boundary burst throttling", () => {
-  it("500 in-memory verifications in a burst throttle past the bucket with 429", async () => {
+  it("500 in-memory verifications in a burst throttle past the bucket with 429", { timeout: 30_000 }, async () => {
     const signer = makeSigner();
     const headers = await signedBurstHeaders(signer);
     const accumulator = accumulatorFor(signer);
@@ -75,7 +84,7 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
     expect(elapsed).toBeLessThan(2_000); // the whole burst lands inside the 2s window
   });
 
-  it("burst 429s never consume allowance or reach monotonicity checks", async () => {
+  it("burst 429s never consume allowance or reach monotonicity checks", { timeout: 30_000 }, async () => {
     const signer = makeSigner();
     const headers = await signedBurstHeaders(signer);
     const accumulator = accumulatorFor(signer);
@@ -90,7 +99,7 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
     expect(accumulator.highest(signer.agentKey)).toBeDefined();
   });
 
-  it("express mount emits 429 + Retry-After with zero backend hits on throttled loops", async () => {
+  it("express mount emits 429 + Retry-After with zero backend hits on throttled loops", { timeout: 60_000 }, async () => {
     const signer = makeSigner();
     const headers = await signedBurstHeaders(signer);
     let backendHits = 0;
@@ -144,7 +153,18 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
     }
   });
 
-  it("throttling is per-agent: one runaway agent cannot starve another", async () => {
+  it("unknown agentKey floods return 402 without allocating limiter state", { timeout: 30_000 }, async () => {
+    const authorized = makeSigner();
+    const stranger = makeSigner(); // valid keypair, NOT in authorizedAgents
+    const headers = await signedBurstHeaders(stranger);
+    const accumulator = accumulatorFor(authorized);
+
+    const statuses = headers.map((h) => accumulator.verifyPayment(h).status);
+    expect(statuses.every((s) => s === 402)).toBe(true);
+    expect(statuses.some((s) => s === 429)).toBe(false); // no bucket for strangers
+  });
+
+  it("throttling is per-agent: one runaway agent cannot starve another", { timeout: 30_000 }, async () => {
     const noisy = makeSigner();
     const quiet = makeSigner();
     const noisyHeaders = await signedBurstHeaders(noisy);

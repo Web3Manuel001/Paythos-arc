@@ -26,6 +26,12 @@ export class TokenBucket {
     private readonly options: TokenBucketOptions,
     private readonly now: () => number = () => Date.now(),
   ) {
+    if (!Number.isFinite(options.capacity) || options.capacity < 1) {
+      throw new RangeError(`token bucket capacity must be a number >= 1 (got ${String(options.capacity)})`);
+    }
+    if (!Number.isFinite(options.refillPerSecond) || options.refillPerSecond <= 0) {
+      throw new RangeError(`token bucket refillPerSecond must be > 0 (got ${String(options.refillPerSecond)})`);
+    }
     this.tokens = options.capacity;
     this.lastRefillAt = now();
   }

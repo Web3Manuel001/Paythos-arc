@@ -99,7 +99,16 @@ class TransactabilityIndex:
         config: Optional[TransactabilityConfig] = None,
         registry: Optional[TransactabilityRegistry] = None,
     ) -> None:
-        self._config = config or TransactabilityConfig()
+        cfg = config or TransactabilityConfig()
+        # Fail closed at construction: a zero-latency-budget or empty window
+        # would silently disable the defence instead of raising.
+        if cfg.window_size < 1:
+            raise ValueError(f"transactability window_size must be >= 1 (got {cfg.window_size!r})")
+        if cfg.latency_budget_ms <= 0:
+            raise ValueError(f"transactability latency_budget_ms must be > 0 (got {cfg.latency_budget_ms!r})")
+        if cfg.min_samples < 1:
+            raise ValueError(f"transactability min_samples must be >= 1 (got {cfg.min_samples!r})")
+        self._config = cfg
         self._registry = registry
         self._observations: dict[str, list[MerchantObservation]] = {}
 
