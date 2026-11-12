@@ -27,7 +27,7 @@ ships. No bug bounty is currently offered.
 | **INV-3** | Per-transaction bound: `delta ≤ maxPerTx` | reverts `MaxPerTxExceeded()` |
 | **INV-4** | Temporal expiry: `block.timestamp` within voucher and policy TTL | reverts `SessionExpired()` |
 | **INV-5** | Non-custodial reserve: only the owner may withdraw capital except via `claimVoucher`; no pooled liquidity, rehypothecation, yield, or `delegatecall` | `emergencyWithdraw` is owner-only; invariant tests reconcile vault balance exactly |
-| **INV-6** | Epoch binding: vouchers carry the delegation epoch; re-authorization/revocation bumps it and invalidates old vouchers and destination allowances | reverts `SessionEpochMismatch()` / `UnauthorizedMerchant()` |
+| **INV-6** | Epoch binding: vouchers carry the delegation epoch. Re-authorization bumps it and invalidates old vouchers and destination allowances; revocation deactivates the agent immediately (claims revert `UnauthorizedAgent()`), and the next re-authorization starts a fresh epoch | reverts `SessionEpochMismatch()` / `UnauthorizedAgent()` / `UnauthorizedMerchant()` |
 
 The 24h window uses 25 hourly slots precisely because both `h` and `h−24` are inside the
 pool; aliasing them would let a second claim in the same hour under-count live spend.

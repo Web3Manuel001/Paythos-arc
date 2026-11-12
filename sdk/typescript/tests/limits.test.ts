@@ -51,6 +51,9 @@ function accumulatorFor(signer: AgentVoucherSigner): VoucherAccumulator {
     merchantAddress: TEST_MERCHANT,
     authorizedAgents: new Map([[signer.agentKey.toLowerCase(), signer.epoch]]),
     rateLimit: LIMIT,
+    // Pre-crypto transport guard (reviewer N1); the framework adapters pass
+    // the client IP. 50 is enough to keep the burst ECDSA-bounded here.
+    ipRateLimit: { capacity: 50, refillPerSecond: 1 },
   });
 }
 
@@ -69,7 +72,7 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
     const accumulator = accumulatorFor(signer);
 
     const started = Date.now();
-    const outcomes = headers.map((h) => accumulator.verifyPayment(h));
+    const outcomes = headers.map((h) => accumulator.verifyPayment(h, "127.0.0.1"));
     const elapsed = Date.now() - started;
 
     const allowed = outcomes.filter((o) => o.status !== 429);
@@ -166,6 +169,73 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
     expect(statuses.some((s) => s === 429)).toBe(false); // no bucket for strangers
   });
 
+  it("forged unsigned vouchers never consume the real agent's bucket (reviewer N1)", { timeout: 30_000 }, async () => {
+    const signer = makeSigner();
+    const accumulator = accumulatorFor(signer); // capacity 20
+    const valid = await signer.recordAndSign(TEST_MERCHANT, 1_000n, "0x" + "33".repeat(32));
+    if (!valid.ok) throw new Error("signing failed");
+    const envelope = {
+      voucher: serializeVoucher(valid.voucher),
+      signature: valid.signature,
+    };
+    // 150 forged vouchers: valid agentKey, tampered cumulative ⇒ bad signature.
+    for (let i = 0; i < 150; i++) {
+      const forged = {
+        ...envelope,
+        voucher: { ...envelope.voucher, cumulativeAmount: String(1_001 + i * 7) },
+      };
+      const outcome = accumulator.verifyPayment({
+        [PAYMENT_SIGNATURE_HEADER]: JSON.stringify(forged),
+      });
+      expect(outcome.status).toBe(402);
+    }
+    // The real agent's next properly-signed voucher still verifies (bucket untouched).
+    const fresh = await signer.recordAndSign(TEST_MERCHANT, 2_000n, "0x" + "33".repeat(32));
+    if (!fresh.ok) throw new Error("signing failed");
+    expect(
+      accumulator.verifyPayment({
+        [PAYMENT_SIGNATURE_HEADER]: JSON.stringify({
+          voucher: serializeVoucher(fresh.voucher),
+          signature: fresh.signature,
+        }),
+      }).status,
+    ).toBe(200);
+  });
+
+  it("per-IP transport limiter caps forged floods before crypto (reviewer N1)", async () => {
+    const signer = makeSigner();
+    const accumulator = new VoucherAccumulator({
+      network: TESTNET,
+      vaultAddress: TEST_VAULT,
+      settlementToken: AR_NATIVE_USDC,
+      merchantAddress: TEST_MERCHANT,
+      authorizedAgents: new Map([[signer.agentKey.toLowerCase(), signer.epoch]]),
+      rateLimit: { capacity: 100, refillPerSecond: 1 },
+      ipRateLimit: { capacity: 2, refillPerSecond: 0.001 },
+      maxIpBuckets: 10,
+    });
+    const valid = await signer.recordAndSign(TEST_MERCHANT, 1_000n, "0x" + "44".repeat(32));
+    if (!valid.ok) throw new Error("signing failed");
+    const envelope = { voucher: serializeVoucher(valid.voucher), signature: valid.signature };
+    const send = (cumulativeAmount: string, clientId: string) =>
+      accumulator.verifyPayment(
+        {
+          [PAYMENT_SIGNATURE_HEADER]: JSON.stringify({
+            voucher: { ...envelope.voucher, cumulativeAmount },
+            signature: envelope.signature,
+          }),
+        },
+        clientId,
+      );
+    expect(send("1001", "203.0.113.9").status).toBe(402);
+    expect(send("1002", "203.0.113.9").status).toBe(402);
+    const throttled = send("1003", "203.0.113.9");
+    expect(throttled.status).toBe(429);
+    expect(throttled.reason).toContain("transport rate limit");
+    // Other identities are unaffected.
+    expect(send("1001", "203.0.113.10").status).toBe(402);
+  });
+
   it("throttling is per-agent: one runaway agent cannot starve another", { timeout: 30_000 }, async () => {
     const noisy = makeSigner();
     const quiet = makeSigner();
@@ -179,7 +249,8 @@ describe("INV-M6 — merchant-boundary burst throttling", () => {
         [noisy.agentKey.toLowerCase(), noisy.epoch],
         [quiet.agentKey.toLowerCase(), quiet.epoch],
       ]),
-      rateLimit: LIMIT,
+      // Slow refill so the noisy bucket cannot recover during the burst.
+      rateLimit: { capacity: LIMIT.capacity, refillPerSecond: 0.001 },
     });
     for (const h of noisyHeaders) accumulator.verifyPayment(h);
     expect(accumulator.verifyPayment(noisyHeaders[0]!).status).toBe(429);

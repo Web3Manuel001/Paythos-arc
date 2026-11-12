@@ -224,7 +224,7 @@ async def test_unattested_streams_block_merchant_before_hold():
     state = {"phase": 0, "streams": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if "x-paythos-stream" in request.headers:
+        if request.method == "POST":
             pytest.fail("completion must never fire — no metering was attested")
         state["phase"] += 1
         if state["phase"] % 2 == 1:

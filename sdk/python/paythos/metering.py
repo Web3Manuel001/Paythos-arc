@@ -22,6 +22,8 @@ from .errors import PaythosError
 class MeteringReport:
     scheme: str
     units: str
+    #: Client-chosen nonce sent on stream open (X-PAYTHOS-STREAM); the merchant
+    #: must echo it exactly or the report is treated as a replay (reviewer N2).
     stream_id: str
     #: Decimal USDC actually consumed, e.g. "0.0034".
     consumed: str

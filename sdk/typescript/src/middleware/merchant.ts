@@ -61,6 +61,15 @@ export interface MerchantVerifierConfig {
    * bucket; defaults 100 burst / 10 per second (spec default).
    */
   rateLimit?: { capacity: number; refillPerSecond: number };
+  /**
+   * Cheap pre-crypto limiter keyed by client IP / connection identity. Charged
+   * BEFORE signature recovery so a flood of forged vouchers cannot burn CPU;
+   * the per-agent bucket is charged only after the signature verifies.
+   * Defaults 1000 burst / 100 per second (transport DDoS guard, not spend).
+   */
+  ipRateLimit?: { capacity: number; refillPerSecond: number };
+  /** Hard cap on retained per-IP buckets (LRU-ish insertion eviction). Default 10_000. */
+  maxIpBuckets?: number;
 }
 
 export interface FlushPlan {
@@ -101,8 +110,11 @@ export class VoucherAccumulator {
   #domain: TypedDataDomain;
 
   readonly #buckets = new Map<string, TokenBucket>();
+  /** Bounded per-client-IP buckets charged before any cryptographic work. */
+  readonly #ipBuckets = new Map<string, TokenBucket>();
 
   readonly #merchant: string;
+  readonly #maxIpBuckets: number;
 
   constructor(protected readonly cfg: MerchantVerifierConfig) {
     this.#domain = domainFor({ network: cfg.network, vaultAddress: cfg.vaultAddress });
@@ -121,6 +133,18 @@ export class VoucherAccumulator {
     if (!Number.isFinite(limit.refillPerSecond) || limit.refillPerSecond <= 0) {
       throw new RangeError(`rateLimit.refillPerSecond must be > 0 (got ${String(limit.refillPerSecond)})`);
     }
+    const ipLimit = cfg.ipRateLimit ?? { capacity: 1_000, refillPerSecond: 100 };
+    if (!Number.isFinite(ipLimit.capacity) || ipLimit.capacity < 1) {
+      throw new RangeError(`ipRateLimit.capacity must be >= 1 (got ${String(ipLimit.capacity)})`);
+    }
+    if (!Number.isFinite(ipLimit.refillPerSecond) || ipLimit.refillPerSecond <= 0) {
+      throw new RangeError(`ipRateLimit.refillPerSecond must be > 0 (got ${String(ipLimit.refillPerSecond)})`);
+    }
+    const maxIpBuckets = cfg.maxIpBuckets ?? 10_000;
+    if (!Number.isInteger(maxIpBuckets) || maxIpBuckets < 1) {
+      throw new RangeError(`maxIpBuckets must be an integer >= 1 (got ${String(maxIpBuckets)})`);
+    }
+    this.#maxIpBuckets = maxIpBuckets;
   }
 
   /** Merchant-side challenge emission (docs/PROTOCOL.md §3.1). */
@@ -128,7 +152,19 @@ export class VoucherAccumulator {
     if (challenge.x402Version !== 2) {
       throw new TypeError("x402Version ≠ 2 — merchant middleware MUST speak v2");
     }
+    this.assertPayee(challenge);
     return { [PAYMENT_REQUIRED_HEADER]: Buffer.from(JSON.stringify(challenge), "utf8").toString("base64") };
+  }
+
+  /**
+   * Payee/pricing single source of truth: the emitted challenge MUST settle to
+   * `merchantAddress`. Otherwise the voucher this middleware later accepts and
+   * the destination it advertises silently drift apart (reviewer 2026-11).
+   */
+  assertPayee(challenge: PaymentChallenge): void {
+    if (typeof challenge.payTo !== "string" || challenge.payTo.toLowerCase() !== this.#merchant) {
+      throw new TypeError("challenge.payTo must equal merchantAddress (payee drift, fail closed)");
+    }
   }
 
   /** Reflect the stored domain for tests/tools. */
@@ -147,7 +183,7 @@ export class VoucherAccumulator {
    *   - native `-paythos-voucher` (base64 JSON) + `-paythos-signature` pair
    * Accumulates strictly-increasing vouchers only. Batches POST /flush plan.
    */
-  verifyPayment(headers: Headers | Record<string, string>): VerifyOutcome {
+  verifyPayment(headers: Headers | Record<string, string>, clientId?: string): VerifyOutcome {
     const h = toHeaders(headers);
     const envelope = h.get("payment-signature");
     let voucher: Voucher | undefined;
@@ -166,7 +202,25 @@ export class VoucherAccumulator {
       voucher = decodeVoucher(voucherB64);
       if (!voucher) return fail(402, "PAYTHOS voucher undecodable");
     }
-    return this.#verifyCore(voucher, signature);
+    return this.#verifyCore(voucher, signature, clientId);
+  }
+
+  /**
+   * Per-client-IP transport bucket. Charged before signature recovery so a
+   * forged-voucher flood cannot consume CPU; bounded so untrusted identities
+   * cannot grow the map without limit.
+   */
+  #ipLimitFor(clientId: string): TokenBucket {
+    let bucket = this.#ipBuckets.get(clientId);
+    if (bucket === undefined) {
+      if (this.#ipBuckets.size >= this.#maxIpBuckets) {
+        const oldest = this.#ipBuckets.keys().next().value;
+        if (oldest !== undefined) this.#ipBuckets.delete(oldest);
+      }
+      bucket = new TokenBucket(this.cfg.ipRateLimit ?? { capacity: 1_000, refillPerSecond: 100 });
+      this.#ipBuckets.set(clientId, bucket);
+    }
+    return bucket;
   }
 
   /** Per-agent bucket (created lazily; config-driven with spec defaults). */
@@ -181,7 +235,19 @@ export class VoucherAccumulator {
   }
 
   /** Shared verification pipeline used by both wire formats. */
-  #verifyCore(voucher: Voucher, signature: string): VerifyOutcome {
+  #verifyCore(voucher: Voucher, signature: string, clientId?: string): VerifyOutcome {
+    // Cheap transport first: charge the client identity before any crypto, so
+    // forged-voucher floods cannot burn CPU or exhaust a real agent's bucket.
+    if (clientId !== undefined) {
+      const ipThrottle = this.#ipLimitFor(clientId).tryConsume();
+      if (!ipThrottle.allowed) {
+        return fail(
+          429,
+          `transport rate limit — retry in ${ipThrottle.retryAfterSeconds}s`,
+          ipThrottle.retryAfterSeconds,
+        );
+      }
+    }
     if (voucher.token !== this.cfg.settlementToken) {
       return fail(402, "voucher token is not the configured settlement token");
     }
@@ -201,18 +267,6 @@ export class VoucherAccumulator {
     if (voucher.epoch !== authorizedEpoch) {
       return fail(402, "voucher epoch does not match the agent's active delegation (INV-6)");
     }
-    // INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
-    // Placement AFTER authorization keeps the bucket map bounded — unknown
-    // agentKey strings never allocate state.
-    const throttle = this.#limitFor(voucher.agentKey).tryConsume();
-    if (!throttle.allowed) {
-      return fail(
-        429,
-        `local rate limit — retry in ${throttle.retryAfterSeconds}s`,
-        throttle.retryAfterSeconds,
-      );
-    }
-
     // <5ms: recover signer in memory (no RPC — INV-M1).
     let recovered: string;
     try {
@@ -226,6 +280,17 @@ export class VoucherAccumulator {
     }
     if (recovered !== lowerKey) {
       return fail(402, "signature was NOT signed by voucher.agentKey (INV bound)");
+    }
+    // INV-M6: charge the per-agent bucket only AFTER the signature verifies.
+    // Charging earlier let 150 forged vouchers drain a real agent's bucket
+    // and turn its next valid request into a 429 (reviewer 2026-11).
+    const throttle = this.#limitFor(recovered).tryConsume();
+    if (!throttle.allowed) {
+      return fail(
+        429,
+        `local rate limit — retry in ${throttle.retryAfterSeconds}s`,
+        throttle.retryAfterSeconds,
+      );
     }
 
     // INV-1 on the merchant side, EPOCH-SCOPED: re-authorization resets the

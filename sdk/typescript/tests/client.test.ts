@@ -187,8 +187,14 @@ describe("PaythosClient.fetchWithX402", () => {
 });
 
 describe("challenge decoding", () => {
-  it("parseMaxMicro accepts decimal and atomic forms", () => {
+  it("parseMaxMicro: max is decimal USD, amount is atomic micro (no guessing)", () => {
     expect(parseMaxMicro({ ...challengeJson("0.01"), scheme: "exact" } as never)).toBe(10_000n);
-    expect(parseMaxMicro({ ...challengeJson("100000"), amount: "100000", scheme: "exact" } as never)).toBe(100_000n);
+    // Bare integer max is USD, NOT atomic micro (reviewer 2026-11 ambiguity).
+    expect(parseMaxMicro({ ...challengeJson("10"), scheme: "exact" } as never)).toBe(10_000_000n);
+    expect(parseMaxMicro({ ...challengeJson("100000"), scheme: "exact" } as never)).toBe(100_000_000_000n);
+    // Atomic form is the explicit x402 `amount` field.
+    expect(
+      parseMaxMicro({ ...challengeJson(""), amount: "100000", scheme: "exact" } as never),
+    ).toBe(100_000n);
   });
 });

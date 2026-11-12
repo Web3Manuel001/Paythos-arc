@@ -2,7 +2,7 @@
 
 **Enterprise spend-control and governance layer for AI agents transacting in USDC on Arc L1.** Cross-chain stablecoin funding arrives via Circle CCTP (burn-and-mint through Circle's rails), so other chains' USDC can fund a Paythos vault without Paythos ever operating a bridge.
 
-Paythos sits between an AI agent and its money. It converts raw agent wallets (or Circle Agent Wallets) into policy-enforced **Paythos Vaults**: non-custodial capital with on-chain daily ceilings, per-transaction bounds, session expiry, three-tier human approval gates, and a signed-every-thought verifiable-intent audit trail.
+Paythos sits between an AI agent and its money. It converts raw agent wallets into policy-enforced **Paythos Vaults**: non-custodial capital with on-chain daily ceilings, per-transaction bounds, session expiry, three-tier human approval gates, and a signed-every-thought verifiable-intent audit trail. A dedicated Circle Agent Wallets approval/audit adapter is on the Gate 5 integration list (the vault/SDK layer is wallet-agnostic today).
 
 Where Circle's Agent Stack (agents.circle.com) provides the rails — the marketplace, the currency, the nanopayments — Paythos provides the buy-side defense layer: pre-spend simulation, counterparty scoring, monotonic state-channel settlement, and enterprise policy enforcement.
 
@@ -13,7 +13,7 @@ Where Circle's Agent Stack (agents.circle.com) provides the rails — the market
 | Gate | Scope | State |
 | --- | --- | --- |
 | 1 | `PaythosVault.sol` + invariant fuzz suite | complete — 36 Foundry tests green |
-| 2 | Voucher channel, merchant middleware, INV-M6 throttling, verify benchmark | complete — TS 132 · Python 108 |
+| 2 | Voucher channel, merchant middleware, INV-M6 throttling, verify benchmark | complete — TS 136 · Python 112 |
 | 3 | GOFER policy engine, dryRun, 3-tier gate, verifiable intent, `upto`/YOPO (INV-M5), Transactability Index, Circle Discovery firewall | complete |
 | 4 | LangChain / ElizaOS / AutoGen adapters, stdio MCP server, one-block install | complete |
 | 5 | Arc deployment + Circle CCTP funding + SDK release + grant package | next (blocked on team treasury address and PROTOCOL-OPEN-Q1) |
@@ -50,8 +50,8 @@ docs/                 Internal protocol spec (not distributed)
 
 ```bash
 cd contracts && forge test                    # 36 tests
-cd sdk/typescript && npm ci && npm test       # 132 tests
-cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 108 tests
+cd sdk/typescript && npm ci && npm test       # 136 tests
+cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 112 tests
 ```
 
 TypeScript is strict (`exactOptionalPropertyTypes`, no `any` in exported APIs); Python mirrors the TS types 1:1 with pydantic.

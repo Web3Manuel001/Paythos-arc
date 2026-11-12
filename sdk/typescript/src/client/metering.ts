@@ -11,7 +11,11 @@ import { PaythosError } from "../core/errors.js";
 export interface MeteringReport {
   scheme: "upto";
   units: "USD";
-  /** Server-side stream identifier — unique per stream. */
+  /**
+   * Client-chosen stream nonce, sent on the stream open (X-PAYTHOS-STREAM).
+   * The merchant MUST echo it exactly; a report bound to any other id is a
+   * replay and is rejected (reviewer N2).
+   */
   streamId: string;
   /** Decimal USDC actually consumed, e.g. "0.0034". */
   consumed: string;

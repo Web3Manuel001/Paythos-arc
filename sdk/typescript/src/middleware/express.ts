@@ -55,6 +55,15 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
       // GATED route: no proof of payment ⇒ x402 challenge (fail closed).
       const ctx: MerchantChallengeContext = { method: req.method ?? "GET", url: req.originalUrl ?? req.url };
       const challenge = challengeFor(ctx);
+      try {
+        accumulator.assertPayee(challenge);
+      } catch (err) {
+        // Misconfiguration must never advertise a destination this mount will
+        // not redeem for; fail closed instead of drifting (reviewer 2026-11).
+        res.status(500);
+        res.json({ error: "merchant_payee_mismatch", detail: String(err) });
+        return;
+      }
       res.status(402);
       res.setHeader(PAYMENT_REQUIRED_HEADER, encodeChallenge(challenge));
       res.setHeader("accept-payment", "PAYTHOS/x402v2");
@@ -62,7 +71,7 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
       return;
     }
 
-    const outcome: VerifyOutcome = accumulator.verifyPayment(headers);
+    const outcome: VerifyOutcome = accumulator.verifyPayment(headers, req.ip);
     if (!outcome.ok) {
       res.status(outcome.status);
       res.setHeader("accept-payment", "PAYTHOS/x402v2");

@@ -270,30 +270,41 @@ export class PaythosClient {
 
     const gate = this.gate(challenge, prompt);
     if (!gate.ok) return { ok: false, error: gate.error, holdState: "unset" };
-    if (gate.needsHuman) {
-      const approved = await this.confirmTier2({
-        amountUsd: formatMicroUsd(gate.amountMicro),
-        merchant: challenge.payTo,
-        memo: gate.memo,
-      });
-      if (!approved) {
-        return { ok: false, error: humanApprovalFailure(gate.reason), holdState: "unset" };
-      }
-    }
 
     // ---- HOLD (internal lock — the ceiling is NEVER signed here) ----
+    // Lock BEFORE awaiting human approval: two concurrent streams used to pass
+    // the free-budget check, both await approval, then both lock — allowing
+    // active holds to exceed the allowance (reviewer 2026-11). The check and
+    // lock are synchronous, so no interleaving is possible between them.
     const streamId = HoldLedger.streamIdFor(
       attempt.url,
       prompt,
       Date.now() * 1000 + (this.#streamSeq++ % 1000),
     );
     this.#holds.lock(streamId, challenge.payTo, ceiling);
+    if (gate.needsHuman) {
+      let approved: boolean;
+      try {
+        approved = await this.confirmTier2({
+          amountUsd: formatMicroUsd(gate.amountMicro),
+          merchant: challenge.payTo,
+          memo: gate.memo,
+        });
+      } catch (err) {
+        this.#holds.release(streamId);
+        throw err;
+      }
+      if (!approved) {
+        this.#holds.release(streamId);
+        return { ok: false, error: humanApprovalFailure(gate.reason), holdState: "released" };
+      }
+    }
 
     // ---- 4. open the stream UNPAID ----
     const streamStartedAt = Date.now();
     let stream: Response;
     try {
-      stream = await this.rawFetchBuilder(attempt);
+      stream = await this.rawFetchBuilder(attempt, undefined, undefined, streamId);
     } catch (err) {
       this.#holds.release(streamId);
       this.#observe(challenge.payTo, { ok: false, latencyMs: Date.now() - streamStartedAt, valid: false });
@@ -380,6 +391,21 @@ export class PaythosClient {
         error: {
           code: "policy_ambiguous",
           detail: "metering attestation did NOT recover to the payTo destination",
+        },
+        holdState: "released",
+      };
+    }
+    // Replay binding: a merchant signature over stream A must never settle
+    // stream B (reviewer 2026-11). The id is client-chosen, sent on the stream
+    // open, and the attestation must echo exactly that id.
+    if (report.streamId !== streamId) {
+      this.#holds.release(streamId);
+      this.#observe(challenge.payTo, { ok: true, latencyMs: Date.now() - streamStartedAt, valid: false });
+      return {
+        ok: false,
+        error: {
+          code: "policy_ambiguous",
+          detail: "metering attestation is bound to a different stream — hold released (replay)",
         },
         holdState: "released",
       };
@@ -541,8 +567,17 @@ export class PaythosClient {
     return gate({ ...summary, kind: "tier2_review" });
   }
 
-  protected async rawFetchBuilder(attempt: RequestAttempt, voucher?: Voucher, signature?: string): Promise<Response> {
+  protected async rawFetchBuilder(
+    attempt: RequestAttempt,
+    voucher?: Voucher,
+    signature?: string,
+    streamId?: string,
+  ): Promise<Response> {
     const headers = new Headers(attempt.headers);
+    if (streamId !== undefined) {
+      // The merchant binds its metering attestation to this client-chosen id.
+      headers.set(X_PAYTHOS_STREAM_HEADER, streamId);
+    }
     if (voucher && signature) {
       headers.set(PAYMENT_SIGNATURE_HEADER, JSON.stringify({
         voucher: serializeVoucher(voucher),
@@ -593,18 +628,28 @@ function networkFail(status: number): ExecutedResult {
   return { ok: false, error: { code: "network_error", detail: `HTTP ${status}` }, status };
 }
 
-/** `max`/`amount` fields accepted ("0.01" decimal or "10000" atomic micro). */
+/**
+ * Unambiguous challenge-amount parsing (reviewer 2026-11).
+ * `max` is ALWAYS decimal USD per PROTOCOL.md §3.1 — a bare `"10"` is $10.00,
+ * never 10 atomic micro. `amount` is the x402 atomic-micro field and is used
+ * only when `max` is absent/empty. The two formats never guess from digits.
+ */
 export function parseMaxMicro(challenge: PaymentChallenge): bigint {
-  const raw = (challenge as { max?: string; amount?: string }).max ?? (challenge as { amount?: string }).amount;
-  if (typeof raw !== "string") {
-    throw new PaythosError("invalid_challenge", "challenge carries no max/amount field");
+  const { max, amount } = challenge;
+  if (typeof max === "string" && max.length > 0) {
+    try {
+      return microFromDecimal(max);
+    } catch {
+      throw new PaythosError("invalid_challenge", `unparseable challenge max (decimal USD): ${max}`);
+    }
   }
-  try {
-    // Decimal point implies USD decimal format; raw digits imply atomic micro.
-    return raw.includes(".") ? microFromDecimal(raw) : BigInt(raw);
-  } catch {
-    throw new PaythosError("invalid_challenge", `unparseable challenge amount: ${raw}`);
+  if (typeof amount === "string" && amount.length > 0) {
+    if (!/^\d+$/.test(amount)) {
+      throw new PaythosError("invalid_challenge", `unparseable challenge amount (atomic micro): ${amount}`);
+    }
+    return BigInt(amount);
   }
+  throw new PaythosError("invalid_challenge", "challenge carries no max/amount field");
 }
 
 function microFromDecimal(usd: string): bigint {

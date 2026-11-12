@@ -90,7 +90,8 @@ class PaymentChallenge(BaseModel):
     network: PaythosNetwork
     asset: str
     pay_to: str
-    max: str  # decimal USDC string, e.g. "0.01"
+    max: str  # decimal USDC string, e.g. "0.01" (NEVER atomic micro)
+    amount: str | None = None  # x402 atomic-micro amount (only when max is absent)
     resource: str
     description: str | None = None
     mime_type: str | None = None

@@ -50,8 +50,8 @@ function isCompletionCall(init?: RequestInit): boolean {
 interface Fixtures {
   client: PaythosClient;
   signer: AgentVoucherSigner;
-  /** Scripted responses consumed in order; falls back to failing the test. */
-  queue: Array<() => Response | Promise<Response>>;
+  /** Scripted responses consumed in order; receives the client stream id. */
+  queue: Array<(streamId: string | null) => Response | Promise<Response>>;
   completions: Array<{ headers: Record<string, string>; body: string }>;
 }
 
@@ -73,7 +73,7 @@ function makeClient(opts: Partial<ConstructorParameters<typeof PaythosClient>[1]
     }
     const next = queue.shift();
     if (!next) throw new Error(`unexpected fetch #${fetchFn.mock.calls.length} — queue empty`);
-    return await next();
+    return await next(headerOf(init, "x-paythos-stream"));
   }) as unknown as typeof fetch;
   const client = new PaythosClient(signer, {
     signer,
@@ -92,6 +92,24 @@ function enqueueChallenge(fix: Fixtures, challenge: PaymentChallenge): void {
 
 function enqueueStream(fix: Fixtures, body: string | ReadableStream<Uint8Array>): void {
   fix.queue.push(() => new Response(body, { status: 200 }));
+}
+
+/** Stream body whose metering attestation is signed for the actual stream id. */
+function enqueueMeteredStream(
+  fix: Fixtures,
+  signer: Wallet,
+  consumed: string,
+): void {
+  fix.queue.push(async (streamId) => {
+    if (streamId === null) throw new Error("stream opened without x-paythos-stream");
+    const report = await signMeteringReport(signer, {
+      scheme: "upto",
+      units: "USD",
+      streamId,
+      consumed,
+    });
+    return new Response(JSON.stringify(report) + "\n", { status: 200 });
+  });
 }
 
 async function runStream(fix: Fixtures, attempt: { url?: string; prompt?: string } = {}, hooks: StreamHooks = {}): Promise<StreamedResult> {
@@ -195,23 +213,27 @@ describe("Metering attestation", () => {
 describe("streamWithX402 — full YOPO lifecycle", () => {
   it("happy path: metered consumption settles the EXACT voucher at completion", async () => {
     const fix = makeClient();
-    const attested = await signMeteringReport(merchantWallet, {
-      scheme: "upto",
-      units: "USD",
-      streamId: "stream-1",
-      consumed: "0.0034",
-    });
     enqueueChallenge(fix, uptoChallenge("0.01"));
     const enc = new TextEncoder();
-    const chunked = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(enc.encode("hello "));
-        controller.enqueue(enc.encode("streamed "));
-        controller.enqueue(enc.encode("world\n" + JSON.stringify(attested) + "\n"));
-        controller.close();
-      },
+    const chunked = (streamId: string): ReadableStream<Uint8Array> =>
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const attested = await signMeteringReport(merchantWallet, {
+            scheme: "upto",
+            units: "USD",
+            streamId,
+            consumed: "0.0034",
+          });
+          controller.enqueue(enc.encode("hello "));
+          controller.enqueue(enc.encode("streamed "));
+          controller.enqueue(enc.encode("world\n" + JSON.stringify(attested) + "\n"));
+          controller.close();
+        },
+      });
+    fix.queue.push((streamId) => {
+      if (streamId === null) throw new Error("stream opened without x-paythos-stream");
+      return new Response(chunked(streamId), { status: 200 });
     });
-    enqueueStream(fix, chunked);
 
     const observed: string[] = [];
     const result = await runStream(fix, {}, { onChunk: (_d, acc) => observed.push(acc) });
@@ -271,14 +293,8 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
   it("attestation signed by anyone other than payTo is refused + hold released", async () => {
     const fix = makeClient();
     const intruder = new Wallet(ephemeralPrivateKey());
-    const report = await signMeteringReport(intruder, {
-      scheme: "upto",
-      units: "USD",
-      streamId: "s",
-      consumed: "0.009",
-    });
     enqueueChallenge(fix, uptoChallenge("0.01"));
-    enqueueStream(fix, JSON.stringify(report) + "\n");
+    enqueueMeteredStream(fix, intruder, "0.009");
     const result = await runStream(fix);
     const failure = clientError(result);
     expect(failure.error.code).toBe("policy_ambiguous");
@@ -289,14 +305,8 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
 
   it("metered consumption ABOVE the ceiling is refused + hold released (never overpays)", async () => {
     const fix = makeClient();
-    const report = await signMeteringReport(merchantWallet, {
-      scheme: "upto",
-      units: "USD",
-      streamId: "s",
-      consumed: "0.02",
-    });
     enqueueChallenge(fix, uptoChallenge("0.01"));
-    enqueueStream(fix, JSON.stringify(report) + "\n");
+    enqueueMeteredStream(fix, merchantWallet, "0.02");
     const result = await runStream(fix);
     const failure = clientError(result);
     expect(failure.error.code).toBe("policy_failure");
@@ -307,14 +317,8 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
 
   it("zero-consumed metering releases the hold unpaid (nothing owed)", async () => {
     const fix = makeClient();
-    const report = await signMeteringReport(merchantWallet, {
-      scheme: "upto",
-      units: "USD",
-      streamId: "s",
-      consumed: "0",
-    });
     enqueueChallenge(fix, uptoChallenge("0.01"));
-    enqueueStream(fix, JSON.stringify(report) + "\n");
+    enqueueMeteredStream(fix, merchantWallet, "0");
     const result = await runStream(fix);
     const failure = clientError(result);
     expect(failure.holdState).toBe("released");
@@ -343,14 +347,8 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
   it("ACTIVE holds consume the budget: a second stream past free balance is refused", async () => {
     const fix = makeClient({ allowanceMicro: 500_000n }); // $0.50
     // Stream A settles exactly $0.40.
-    const reportA = await signMeteringReport(merchantWallet, {
-      scheme: "upto",
-      units: "USD",
-      streamId: "sA",
-      consumed: "0.40",
-    });
     enqueueChallenge(fix, uptoChallenge("0.40"));
-    enqueueStream(fix, JSON.stringify(reportA) + "\n");
+    enqueueMeteredStream(fix, merchantWallet, "0.40");
     const a = await runStream(fix, { prompt: "session A" });
     expect(a.ok).toBe(true);
     expect(fix.client.holds.activeHoldMicro()).toBe(0n); // settled → budget freed
@@ -365,13 +363,64 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
     expect(failure.holdState).toBe("unset"); // nothing was locked
   });
 
+  it("rejects a stale metering report replayed onto another stream (reviewer N2)", async () => {
+    const fix = makeClient();
+    enqueueChallenge(fix, uptoChallenge("0.01"));
+    enqueueMeteredStream(fix, merchantWallet, "0.001"); // signed for stream A
+    const a = await runStream(fix, { prompt: "stream A" });
+    expect(a.ok).toBe(true);
+
+    // Same report bytes (merchant attestation over stream A) replayed on B.
+    const reportA = await signMeteringReport(merchantWallet, {
+      scheme: "upto",
+      units: "USD",
+      streamId: "stale-stream-A",
+      consumed: "0.001",
+    });
+    enqueueChallenge(fix, uptoChallenge("0.01"));
+    enqueueStream(fix, JSON.stringify(reportA) + "\n");
+    const b = await runStream(fix, { prompt: "stream B" });
+    const failure = clientError(b);
+    expect(failure.error.code).toBe("policy_ambiguous");
+    expect(failure.error.detail).toMatch(/different stream/);
+    expect(failure.holdState).toBe("released");
+    expect(fix.signer.ledgerSnapshot()).toHaveLength(1); // only A settled
+  });
+
+  it("concurrent holds cannot both pass the budget while human approval is pending (reviewer N3)", async () => {
+    let releaseApproval: (approved: boolean) => void = () => undefined;
+    const approveWithHuman = vi.fn(
+      () => new Promise<boolean>((resolve) => { releaseApproval = resolve; }),
+    );
+    const fix = makeClient({ allowanceMicro: 20_000_000n, approveWithHuman }); // $20
+    enqueueChallenge(fix, uptoChallenge("15.00"));
+    enqueueChallenge(fix, uptoChallenge("15.00"));
+
+    const first = runStream(fix, { prompt: "hold A" });
+    await vi.waitFor(() => expect(approveWithHuman).toHaveBeenCalledTimes(1));
+    // A's $15 hold is locked BEFORE the human prompt resolves.
+    expect(fix.client.holds.activeHoldMicro()).toBe(15_000_000n);
+
+    const second = await runStream(fix, { prompt: "hold B" });
+    const failure = clientError(second);
+    expect(failure.error.detail).toMatch(/insufficient allowance/);
+    expect(fix.client.holds.activeHoldMicro()).toBe(15_000_000n);
+
+    releaseApproval(false); // decline A ⇒ hold released, nothing signed
+    const declined = await first;
+    expect(declined.ok).toBe(false);
+    expect(clientError(declined).holdState).toBe("released");
+    expect(fix.client.holds.activeHoldMicro()).toBe(0n);
+    expect(fix.signer.ledgerSnapshot()).toHaveLength(0);
+  });
+
   it("tier-2 ceiling with no human approver fails closed BEFORE any stream or hold", async () => {
     const fix = makeClient(); // default $20 spec allowance covers the $5 ceiling
     enqueueChallenge(fix, uptoChallenge("5.00"));
     const result = await runStream(fix);
     const failure = clientError(result);
     expect(failure.error.code).toBe("human_approval_required");
-    expect(failure.holdState).toBe("unset");
+    expect(failure.holdState).toBe("released");
     expect(fix.signer.ledgerSnapshot()).toHaveLength(0);
     expect(fix.completions).toHaveLength(0);
   });

@@ -323,23 +323,11 @@ class PaythosClient:
         gate = self.gate(challenge, prompt)
         if not gate.ok or gate.error is not None:
             return StreamedResult(ok=False, error=gate.error, hold_state="unset")
-        if gate.needs_human:
-            approved = await self.confirm_tier2(
-                {
-                    "amount_usd": format_micro_usd(gate.amount_micro),
-                    "merchant": challenge.pay_to,
-                    "memo": gate.memo,
-                    "kind": "tier2_review",
-                }
-            )
-            if not approved:
-                return StreamedResult(
-                    ok=False,
-                    error=PolicyEvaluatedFailure(code="human_approval_required", detail=gate.reason),
-                    hold_state="unset",
-                )
 
         # ---- HOLD (internal lock — the ceiling is NEVER signed here) ----
+        # Lock BEFORE awaiting human approval: two concurrent streams used to
+        # pass the free-budget check, both await, then both lock, exceeding the
+        # allowance (reviewer 2026-11). No await occurs between check and lock.
         stream_id = stream_id_for(
             attempt.url,
             prompt,
@@ -347,13 +335,35 @@ class PaythosClient:
         )
         self._stream_seq += 1
         self.holds.lock(stream_id, challenge.pay_to, ceiling)
+        if gate.needs_human:
+            try:
+                approved = await self.confirm_tier2(
+                    {
+                        "amount_usd": format_micro_usd(gate.amount_micro),
+                        "merchant": challenge.pay_to,
+                        "memo": gate.memo,
+                        "kind": "tier2_review",
+                    }
+                )
+            except Exception:
+                self.holds.release(stream_id)
+                raise
+            if not approved:
+                self.holds.release(stream_id)
+                return StreamedResult(
+                    ok=False,
+                    error=PolicyEvaluatedFailure(code="human_approval_required", detail=gate.reason),
+                    hold_state="released",
+                )
 
         # ---- open the stream UNPAID ----
         stream_started_at = time.time()
+        open_headers = dict(attempt.headers or {})
+        open_headers[X_PAYTHOS_STREAM_HEADER] = stream_id
         request = self._http.build_request(
             attempt.method or "GET",
             attempt.url,
-            headers=attempt.headers or None,
+            headers=open_headers,
             content=attempt.content,
         )
         try:
@@ -456,6 +466,21 @@ class PaythosClient:
                 error=PolicyEvaluatedFailure(
                     code="policy_ambiguous",
                     detail="metering attestation did NOT recover to the payTo destination",
+                ),
+                hold_state="released",
+            )
+        # Replay binding: a signature over stream A must never settle stream B.
+        if report.stream_id != stream_id:
+            self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=True, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
+            return StreamedResult(
+                ok=False,
+                error=PolicyEvaluatedFailure(
+                    code="policy_ambiguous",
+                    detail="metering attestation is bound to a different stream — hold released (replay)",
                 ),
                 hold_state="released",
             )
@@ -606,13 +631,26 @@ def default_extract_metering(full_text: str) -> MeteringReport | None:
 
 
 def parse_max_micro(challenge: PaymentChallenge) -> int:
-    raw = challenge.max
-    if not isinstance(raw, str):
-        raise PaythosError("invalid_challenge", "challenge carries no max field")
-    try:
-        return parse_usd_to_micro(raw) if "." in raw else int(raw)
-    except ValueError as exc:
-        raise PaythosError("invalid_challenge", f"unparseable challenge amount: {raw}") from exc
+    """Unambiguous amount parsing: ``max`` is decimal USD, ``amount`` atomic micro.
+
+    A bare ``max="10"`` is $10.00 (10_000_000 micro), never 10 atomic micro;
+    the x402 ``amount`` field is the only atomic-micro source (reviewer 2026-11).
+    """
+    if isinstance(challenge.max, str) and challenge.max:
+        try:
+            return parse_usd_to_micro(challenge.max)
+        except ValueError as exc:
+            raise PaythosError(
+                "invalid_challenge", f"unparseable challenge max (decimal USD): {challenge.max}"
+            ) from exc
+    amount = getattr(challenge, "amount", None)
+    if isinstance(amount, str) and amount:
+        if not amount.isdigit():
+            raise PaythosError(
+                "invalid_challenge", f"unparseable challenge amount (atomic micro): {amount}"
+            )
+        return int(amount)
+    raise PaythosError("invalid_challenge", "challenge carries no max/amount field")
 
 
 def decode_challenge(response: httpx.Response) -> PaymentChallenge:

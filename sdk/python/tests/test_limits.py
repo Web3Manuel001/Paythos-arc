@@ -76,6 +76,8 @@ def accumulator_for(signer: AgentVoucherSigner) -> VoucherAccumulator:
             merchant_address=TEST_MERCHANT,
             authorized_agents={signer.agent_key.lower(): signer.epoch},
             rate_limit=(CAPACITY, REFILL),
+            # Pre-crypto transport guard (reviewer N1); adapters pass the client IP.
+            ip_rate_limit=(50, 1.0),
         )
     )
 
@@ -93,7 +95,7 @@ def test_500_memory_verifications_throttle_with_429():
     accumulator = accumulator_for(signer)
 
     started = time.time()
-    outcomes = [accumulator.verify_payment(h) for h in headers]
+    outcomes = [accumulator.verify_payment(h, "127.0.0.1") for h in headers]
     elapsed = time.time() - started
 
     throttled = [o for o in outcomes if o.status == 429]
@@ -193,3 +195,72 @@ async def test_fastapi_mount_returns_429_with_retry_after():
         assert int(retry_after) >= 1
         assert "payment-required" not in response.headers  # no re-challenge on throttle
     assert statuses.count(200) <= CAPACITY + 10
+
+
+def _envelope(voucher, signature: str) -> dict:
+    return {
+        "voucher": {
+            "agentKey": voucher.agent_key,
+            "merchant": voucher.merchant,
+            "token": voucher.token,
+            "cumulativeAmount": str(voucher.cumulative_amount),
+            "validUntil": str(voucher.valid_until),
+            "epoch": str(voucher.epoch),
+            "memo": voucher.memo,
+        },
+        "signature": signature,
+    }
+
+
+def test_forged_vouchers_do_not_consume_real_agent_bucket():
+    """Reviewer N1: invalid signatures must not drain the per-agent bucket."""
+    signer = make_signer()
+    accumulator = accumulator_for(signer)  # capacity 20
+    signed = signer.record_and_sign(TEST_MERCHANT, 1_000, "0x" + "33" * 32)
+    assert signed.ok and signed.voucher is not None and signed.signature is not None
+    envelope = _envelope(signed.voucher, signed.signature)
+    for i in range(150):
+        forged = {
+            "voucher": {**envelope["voucher"], "cumulativeAmount": str(1_001 + i * 7)},
+            "signature": envelope["signature"],
+        }
+        outcome = accumulator.verify_payment({"payment-signature": json.dumps(forged)})
+        assert outcome.status == 402
+
+    fresh = signer.record_and_sign(TEST_MERCHANT, 2_000, "0x" + "33" * 32)
+    assert fresh.ok and fresh.voucher is not None and fresh.signature is not None
+    headers = {"payment-signature": json.dumps(_envelope(fresh.voucher, fresh.signature))}
+    assert accumulator.verify_payment(headers).status == 200
+
+
+def test_per_ip_transport_limiter_caps_forged_flood_before_crypto():
+    signer = make_signer()
+    accumulator = VoucherAccumulator(
+        MerchantVerifierConfig(
+            network=TESTNET,
+            vault_address=TEST_VAULT,
+            settlement_token=AR_NATIVE_USDC,
+            merchant_address=TEST_MERCHANT,
+            authorized_agents={signer.agent_key.lower(): signer.epoch},
+            rate_limit=(100, 1.0),
+            ip_rate_limit=(2, 0.001),
+            max_ip_buckets=10,
+        )
+    )
+    signed = signer.record_and_sign(TEST_MERCHANT, 1_000, "0x" + "44" * 32)
+    assert signed.ok and signed.voucher is not None and signed.signature is not None
+    envelope = _envelope(signed.voucher, signed.signature)
+
+    def send(cumulative: str, client_id: str):
+        forged = {
+            **envelope,
+            "voucher": {**envelope["voucher"], "cumulativeAmount": cumulative},
+        }
+        return accumulator.verify_payment({"payment-signature": json.dumps(forged)}, client_id)
+
+    assert send("1001", "203.0.113.9").status == 402
+    assert send("1002", "203.0.113.9").status == 402
+    throttled = send("1003", "203.0.113.9")
+    assert throttled.status == 429
+    assert "transport rate limit" in throttled.reason
+    assert send("1001", "203.0.113.10").status == 402

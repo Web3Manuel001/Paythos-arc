@@ -74,7 +74,9 @@ async function startServer(
 }
 
 function payable(micro: bigint): PaymentChallenge {
-  return challengeJson(MERCHANT, String(micro), "exact");
+  // x402 atomic amount: explicit `amount`, never a bare integer `max`
+  // (which is decimal USD — reviewer 2026-11 parsing ambiguity).
+  return { ...challengeJson(MERCHANT, "", "exact"), amount: String(micro) };
 }
 
 function makeSigner(): AgentVoucherSigner {
@@ -114,12 +116,6 @@ describe("Scenario A — $0.002 upto streaming (ARCHITECTURE.md §3)", () => {
     const seeded = await signer.recordAndSign(MERCHANT, 450_000n, "0x" + "11".repeat(32));
     expect(seeded.ok).toBe(true);
 
-    const metering = await signMeteringReport(merchantWallet, {
-      scheme: "upto",
-      units: "USD",
-      streamId: "ctx-1",
-      consumed: "0.002",
-    });
     let completionOutcome: { ok: boolean; status: number } | undefined;
     let completionStream: string | undefined;
 
@@ -132,7 +128,15 @@ describe("Scenario A — $0.002 upto streaming (ARCHITECTURE.md §3)", () => {
       }
       if (i === 1) {
         res.writeHead(200, { "content-type": "text/plain" });
-        res.end("Arc TVL is $1.24B\n" + JSON.stringify(metering) + "\n");
+        void (async () => {
+          const metering = await signMeteringReport(merchantWallet, {
+            scheme: "upto",
+            units: "USD",
+            streamId: String(_req.headers["x-paythos-stream"]),
+            consumed: "0.002",
+          });
+          res.end("Arc TVL is $1.24B\n" + JSON.stringify(metering) + "\n");
+        })();
         return;
       }
       // Completion POST: the REAL merchant verifier checks the envelope.

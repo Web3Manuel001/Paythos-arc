@@ -61,7 +61,9 @@ export interface PaymentChallenge {
   network: PaythosNetwork;
   asset: string;
   payTo: string;
-  max: string; // decimal USDC string, e.g. "0.01"
+  max: string; // decimal USDC string, e.g. "0.01" (NEVER atomic micro)
+  /** x402 atomic-micro amount, used only when `max` is absent/empty. */
+  amount?: string;
   resource: string;
   description?: string;
   mimeType?: string;

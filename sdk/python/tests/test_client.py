@@ -161,8 +161,13 @@ def test_parse_max_micro_forms() -> None:
     from paythos import PaymentChallenge
 
     assert parse_max_micro(PaymentChallenge(**challenge_payload("0.01"))) == 10_000
-    atomic = PaymentChallenge(**challenge_payload("100000"))
-    assert parse_max_micro(atomic) == 100_000
+    # Bare integer max is USD, NOT atomic micro (reviewer 2026-11 ambiguity).
+    assert parse_max_micro(PaymentChallenge(**challenge_payload("10"))) == 10_000_000
+    assert parse_max_micro(PaymentChallenge(**challenge_payload("100000"))) == 100_000_000_000
+    # Atomic form is the explicit x402 `amount` field (max empty).
+    base = challenge_payload("")
+    base["amount"] = "100000"
+    assert parse_max_micro(PaymentChallenge(**base)) == 100_000
 
 
 def test_decode_challenge_rejects_v1() -> None:

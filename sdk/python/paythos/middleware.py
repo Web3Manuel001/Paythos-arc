@@ -70,6 +70,11 @@ class MerchantVerifierConfig:
     flush_interval_seconds: int = 7_200
     on_flush_ready: FlushCallback | None = None
     rate_limit: tuple[int, float] = (100, 10.0)
+    #: Cheap pre-crypto transport limiter keyed by client IP: a forged-voucher
+    #: flood must not burn CPU or exhaust a real agent's bucket (reviewer 2026-11).
+    ip_rate_limit: tuple[int, float] = (1_000, 100.0)
+    #: Hard cap on retained per-IP buckets (oldest-inserted evicted). Default 10k.
+    max_ip_buckets: int = 10_000
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,7 @@ class VoucherAccumulator:
             SigningDomainArgs(network=config.network, vault_address=config.vault_address)
         )
         self._buckets: dict[str, TokenBucket] = {}
+        self._ip_buckets: dict[str, TokenBucket] = {}
         # Fail closed at construction: invalid limiter config must not surface
         # as a runtime 500 under attack.
         capacity, refill = config.rate_limit
@@ -118,13 +124,26 @@ class VoucherAccumulator:
             raise ValueError(f"rate_limit capacity must be an int >= 1 (got {capacity!r})")
         if refill <= 0:
             raise ValueError(f"rate_limit refill must be > 0 (got {refill!r})")
+        ip_capacity, ip_refill = config.ip_rate_limit
+        if not isinstance(ip_capacity, int) or ip_capacity < 1:
+            raise ValueError(f"ip_rate_limit capacity must be an int >= 1 (got {ip_capacity!r})")
+        if ip_refill <= 0:
+            raise ValueError(f"ip_rate_limit refill must be > 0 (got {ip_refill!r})")
+        if not isinstance(config.max_ip_buckets, int) or config.max_ip_buckets < 1:
+            raise ValueError(f"max_ip_buckets must be an int >= 1 (got {config.max_ip_buckets!r})")
 
     @property
     def domain(self) -> dict[str, object]:
         return dict(self._domain)
 
+    def assert_payee(self, challenge: PaymentChallenge) -> None:
+        """The emitted challenge MUST settle to ``merchant_address`` (no drift)."""
+        if (challenge.pay_to or "").lower() != self._merchant:
+            raise ValueError("challenge.pay_to must equal merchant_address (payee drift, fail closed)")
+
     def emit_challenge(self, challenge: PaymentChallenge) -> dict[str, str]:
         """Merchant-side challenge emission (docs/PROTOCOL.md §3.1)."""
+        self.assert_payee(challenge)
         payload = challenge.model_dump(by_alias=True, exclude_none=True)
         # camelCase wire keys are protocol-mandated; pydantic aliases map snake→camel.
         encoded = base64.b64encode(
@@ -132,7 +151,9 @@ class VoucherAccumulator:
         ).decode("ascii")
         return {PAYMENT_REQUIRED_HEADER: encoded}
 
-    def verify_payment(self, headers: Mapping[str, str]) -> VerifyOutcome:
+    def verify_payment(
+        self, headers: Mapping[str, str], client_id: str | None = None
+    ) -> VerifyOutcome:
         """
         Verify an inbound voucher in memory. No chain call (INV-M1).
         Accepts BOTH wire formats. Accumulates strictly-increasing vouchers
@@ -163,7 +184,7 @@ class VoucherAccumulator:
                     ok=False, status=402, reason="PAYTHOS voucher undecodable"
                 )
 
-        return self._verify_core(voucher, signature)
+        return self._verify_core(voucher, signature, client_id)
 
     def _limit_for(self, agent_key: str) -> TokenBucket:
         """Per-agent bucket (created lazily; config-driven with spec defaults)."""
@@ -175,7 +196,32 @@ class VoucherAccumulator:
             self._buckets[key] = bucket
         return bucket
 
-    def _verify_core(self, voucher: Voucher, signature: str) -> VerifyOutcome:
+    def _ip_limit_for(self, client_id: str) -> TokenBucket:
+        """Bounded per-client-IP bucket charged before any cryptographic work."""
+        bucket = self._ip_buckets.get(client_id)
+        if bucket is None:
+            if len(self._ip_buckets) >= self.cfg.max_ip_buckets:
+                oldest = next(iter(self._ip_buckets), None)
+                if oldest is not None:
+                    del self._ip_buckets[oldest]
+            capacity, refill = self.cfg.ip_rate_limit
+            bucket = TokenBucket(capacity=capacity, refill_per_second=refill)
+            self._ip_buckets[client_id] = bucket
+        return bucket
+
+    def _verify_core(
+        self, voucher: Voucher, signature: str, client_id: str | None = None
+    ) -> VerifyOutcome:
+        # Cheap transport first: forged-voucher floods must not reach recovery.
+        if client_id is not None and client_id != "":
+            ip_throttle = self._ip_limit_for(client_id).try_consume()
+            if not ip_throttle.allowed:
+                return VerifyOutcome(
+                    ok=False,
+                    status=429,
+                    reason=f"transport rate limit — retry in {ip_throttle.retry_after_seconds}s",
+                    retry_after_seconds=ip_throttle.retry_after_seconds,
+                )
         if voucher.token.lower() != self.cfg.settlement_token.lower():
             return VerifyOutcome(
                 ok=False, status=402, reason="voucher token is not the configured settlement token"
@@ -199,17 +245,6 @@ class VoucherAccumulator:
                 status=402,
                 reason="voucher epoch does not match the agent's active delegation (INV-6)",
             )
-        # INV-M6: throttle BEFORE any cryptographic work (zero backend hits).
-        # After authorization ⇒ the bucket map stays bounded for unknown keys.
-        throttle = self._limit_for(voucher.agent_key).try_consume()
-        if not throttle.allowed:
-            return VerifyOutcome(
-                ok=False,
-                status=429,
-                reason=f"local rate limit — retry in {throttle.retry_after_seconds}s (INV-M6)",
-                retry_after_seconds=throttle.retry_after_seconds,
-            )
-
         try:
             recovered = recover_voucher_signer(self._domain, voucher, signature)
         except Exception:  # noqa: BLE001 — any recovery failure denies
@@ -224,6 +259,16 @@ class VoucherAccumulator:
         if recovered != lower_key:
             return VerifyOutcome(
                 ok=False, status=402, reason="signature was NOT signed by voucher.agentKey"
+            )
+        # INV-M6: charge the per-agent bucket only AFTER the signature verifies;
+        # forged vouchers must not drain a real agent's bucket (reviewer 2026-11).
+        throttle = self._limit_for(recovered).try_consume()
+        if not throttle.allowed:
+            return VerifyOutcome(
+                ok=False,
+                status=429,
+                reason=f"local rate limit — retry in {throttle.retry_after_seconds}s (INV-M6)",
+                retry_after_seconds=throttle.retry_after_seconds,
             )
 
         # INV-1/INV-M2, EPOCH-SCOPED: re-authorization resets the on-chain
@@ -409,6 +454,13 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
         assert challenge_for is not None  # caller checked
         ctx = MerchantChallengeContext(method=request.method, url=request.url.path)
         challenge = challenge_for(ctx)
+        try:
+            accumulator.assert_payee(challenge)
+        except ValueError as exc:
+            # Fail closed: never advertise a destination this mount won't redeem.
+            return JSONResponse(
+                {"error": "merchant_payee_mismatch", "detail": str(exc)}, status_code=500
+            )
         encoded = base64.b64encode(
             json.dumps(challenge.model_dump(by_alias=True, exclude_none=True), separators=(",", ":")).encode("utf-8")
         ).decode("ascii")
@@ -437,7 +489,8 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
                         headers={"accept-payment": "PAYTHOS/x402v2"},
                     )
                 return _challenge_response(request)
-            outcome = accumulator.verify_payment(headers)
+            client_id = request.client.host if request.client is not None else None
+            outcome = accumulator.verify_payment(headers, client_id)
             if not outcome.ok:
                 response_headers = {"accept-payment": "PAYTHOS/x402v2"}
                 if outcome.status == 429:

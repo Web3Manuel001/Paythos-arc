@@ -52,7 +52,7 @@ The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the cur
 ## Domain Vocabulary (use consistently)
 
 - **Vault** — `PaythosVault.sol`; custody + policy enforcement + batch settlement.
-- **Voucher** — EIP-712 signed struct (PROTOCOL v3 domain version `"3"`): `agentKey, merchant, token, cumulativeAmount, validUntil, epoch`. Always cumulative, never per-call amounts. `epoch` binds the voucher to one `authorizeAgent` generation (INV-6): re-authorization/revocation bumps it and stale vouchers revert with `SessionEpochMismatch`.
+- **Voucher** — EIP-712 signed struct (PROTOCOL v3 domain version `"3"`): `agentKey, merchant, token, cumulativeAmount, validUntil, epoch`. Always cumulative, never per-call amounts. `epoch` binds the voucher to one `authorizeAgent` generation (INV-6): re-authorization bumps it (stale vouchers revert `SessionEpochMismatch`), while revocation deactivates the agent immediately (claims revert `UnauthorizedAgent`).
 - **Policy struct** — `dailyLimit`, `maxPerTx`, `expiresAt` (TTL), allowlist set.
 - **Flush** — merchant-side batch settlement of accumulated vouchers to the vault.
 - **Transactability Index** — merchant health score (uptime, response validity, latency, 5xx rate).
@@ -74,8 +74,8 @@ The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the cur
 
 ```bash
 cd contracts && forge test                        # 36 tests (unit + invariant fuzz)
-cd sdk/typescript && npx tsc --noEmit && npm test # 132 tests, strict TS
-cd sdk/python && .venv/bin/python -m pytest tests # 108 tests (asyncio_mode=auto)
+cd sdk/typescript && npx tsc --noEmit && npm test # 136 tests, strict TS
+cd sdk/python && .venv/bin/python -m pytest tests # 112 tests (asyncio_mode=auto)
 cd sdk/typescript && npm run bench:verify -- 2000 --enforce   # release hardware only
 ```
 
