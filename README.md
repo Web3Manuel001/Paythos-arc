@@ -24,8 +24,10 @@ epoch-synced `claimVoucher` tx `0xa874d4f291be7a1eb2210e9c7ebda4f765e2f3bab89980
 (block 71523116, 150 bps fee, replay rejected), plus the live INV-6 proof: re-authorization
 bumped epoch 1→2, a stale-epoch voucher reverted `SessionEpochMismatch`, and the
 live-epoch claim settled. Funded MCP+SDK smoke (`npm run e2e:mcp-live`) settled two
-cumulative vouchers (0.04 + 0.06 USDC) through the MCP `settle_invoice` tool and
-`claimVoucher()` in tx `0xfcd2de00…d1e587` (block 72232591, 150 bps fee).
+cumulative vouchers (0.04 + 0.06 USDC) through the MCP `settle_invoice` tool against
+distinct merchant payee `0x9eee8683…4752875`; `claimVoucher()` tx
+`0x99a1c655…e536d668` (block 72233956, 150 bps fee) paid the merchant net 0.0985 USDC
+with the balance delta asserted.
 
 ## Architecture at a glance
 
