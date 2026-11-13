@@ -7,6 +7,7 @@
  */
 import { keccak256, toUtf8Bytes, verifyMessage } from "ethers";
 import { PaythosError } from "../core/errors.js";
+import { X_PAYTHOS_STREAM_HEADER, parseUsdToMicro } from "../types.js";
 
 export interface MeteringReport {
   scheme: "upto";
@@ -41,6 +42,48 @@ export async function signMeteringReport(
   report: Omit<MeteringReport, "signature">,
 ): Promise<MeteringReport> {
   return { ...report, signature: await wallet.signMessage(meteringCanonical(report)) };
+}
+
+export interface StreamAttestation {
+  streamId: string;
+  report: MeteringReport;
+  /** Terminal response body (JSON report) — send it as the last stream frame. */
+  body: string;
+  headers: Record<string, string>;
+}
+
+/**
+ * Merchant helper: attest a finished stream against the client's nonce
+ * (`X-PAYTHOS-STREAM`). A server that echoes any other id will have its report
+ * rejected by the client as a replay (reviewer N2).
+ */
+export async function attestStream(
+  wallet: { signMessage(message: string): Promise<string> },
+  headers: Headers | Record<string, string>,
+  consumed: string,
+): Promise<StreamAttestation> {
+  const h = headers instanceof Headers ? headers : new Headers(headers);
+  const streamId = h.get(X_PAYTHOS_STREAM_HEADER);
+  if (typeof streamId !== "string" || streamId.length === 0) {
+    throw new PaythosError("invalid_challenge", `missing ${X_PAYTHOS_STREAM_HEADER} on the stream open`);
+  }
+  try {
+    parseUsdToMicro(consumed);
+  } catch {
+    throw new PaythosError("invalid_challenge", `unparseable consumed amount: "${consumed}"`);
+  }
+  const report = await signMeteringReport(wallet, {
+    scheme: "upto",
+    units: "USD",
+    streamId,
+    consumed,
+  });
+  return {
+    streamId,
+    report,
+    body: JSON.stringify(report),
+    headers: { "content-type": "application/json" },
+  };
 }
 
 /**

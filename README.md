@@ -13,7 +13,7 @@ Where Circle's Agent Stack (agents.circle.com) provides the rails — the market
 | Gate | Scope | State |
 | --- | --- | --- |
 | 1 | `PaythosVault.sol` + invariant fuzz suite | complete — 36 Foundry tests green |
-| 2 | Voucher channel, merchant middleware, INV-M6 throttling, verify benchmark | complete — TS 136 · Python 112 |
+| 2 | Voucher channel, merchant middleware, INV-M6 throttling, verify benchmark | complete — TS 141 · Python 116 |
 | 3 | GOFER policy engine, dryRun, 3-tier gate, verifiable intent, `upto`/YOPO (INV-M5), Transactability Index, Circle Discovery firewall | complete |
 | 4 | LangChain / ElizaOS / AutoGen adapters, stdio MCP server, one-block install | complete |
 | 5 | Arc deployment + Circle CCTP funding + SDK release + grant package | next (blocked on team treasury address and PROTOCOL-OPEN-Q1) |
@@ -50,8 +50,8 @@ docs/                 Internal protocol spec (not distributed)
 
 ```bash
 cd contracts && forge test                    # 36 tests
-cd sdk/typescript && npm ci && npm test       # 136 tests
-cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 112 tests
+cd sdk/typescript && npm ci && npm test       # 141 tests
+cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 116 tests
 ```
 
 TypeScript is strict (`exactOptionalPropertyTypes`, no `any` in exported APIs); Python mirrors the TS types 1:1 with pydantic.
@@ -76,7 +76,18 @@ const result = await client.fetchWithX402({ url: "https://api.example.com/premiu
 // result.ok ? result.data : result.error.code / detail
 ```
 
-Metered streaming (`scheme: "upto"`) uses `client.streamWithX402(...)`: the client holds only the ceiling, signs an **exact-consumption** voucher at completion, and signs nothing when the stream fails (INV-M5).
+Metered streaming (`scheme: "upto"`) uses `client.streamWithX402(...)`: the client holds only the ceiling, sends a client-chosen `X-PAYTHOS-STREAM` nonce on stream open, signs an **exact-consumption** voucher at completion, and signs nothing when the stream fails (INV-M5). The merchant must echo that nonce in a signed terminal frame:
+
+```ts
+import { attestStream } from "@paythos/sdk";
+
+const attestation = await attestStream(merchantWallet, req.headers, consumedUsd);
+res.end(attestation.body); // last stream frame; a different streamId is rejected as replay
+```
+
+Python parity: `attestation = attest_stream(merchant_account, request.headers, consumed_usd)`.
+
+Client safety rails: `approvalTimeoutMs` (default 120s), `streamOpenTimeoutMs` (default 30s), and `holdTtlMs` (default 10min). Expired approval/stream-open deadlines release the hold; the TTL sweep prevents abandoned streams from pinning budget.
 
 ### Merchant gating (Express)
 
@@ -94,6 +105,8 @@ app.use(paythosMerchant({
 ```
 
 Every mount gates: no payment headers gets a 402 challenge when `challengeFor` is set, and a 402 `payment_required` rejection when it is omitted (no pass-through).
+
+**Behind a proxy**, set `app.set("trust proxy", 1)` (or the exact hop/subnet) so `req.ip` is the real client rather than Cloudflare/Render/Vercel. Otherwise every agent shares one per-IP bucket. FastAPI/uvicorn needs `--proxy-headers --forwarded-allow-ips=<proxy>`. The adapters warn once at runtime when they see a private/loopback client identity.
 
 ### MCP server
 

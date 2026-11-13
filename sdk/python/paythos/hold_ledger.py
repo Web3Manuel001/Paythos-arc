@@ -76,6 +76,25 @@ class HoldLedger:
         entry.settled_micro = consumed_micro
         entry.settled_at = time.time()
 
+    def sweep_expired(self, ttl_seconds: float, now: float | None = None) -> list[HoldEntry]:
+        """Release ACTIVE holds older than ``ttl_seconds`` (abandoned streams).
+
+        Holds are budget reservations, not vouchers; without a TTL a stream
+        whose client never returns would pin allowance forever (reviewer 2026-11).
+        """
+        if ttl_seconds <= 0:
+            raise ValueError("hold TTL must be > 0")
+        current = time.time() if now is None else now
+        released: list[HoldEntry] = []
+        for hold in self._holds.values():
+            if hold.state != "active":
+                continue
+            if current - hold.created_at >= ttl_seconds:
+                hold.state = "released"
+                hold.released_at = current
+                released.append(hold)
+        return released
+
     def get(self, stream_id: str) -> HoldEntry | None:
         return self._holds.get(stream_id)
 

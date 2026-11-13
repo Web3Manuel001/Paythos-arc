@@ -29,9 +29,39 @@ export interface PaythosMerchantMount extends MerchantVerifierConfig {
   readonly accumulator?: VoucherAccumulator;
 }
 
+/**
+ * True for RFC1918 / loopback / link-local / unspecified / IPv6 ULA addresses.
+ * Behind a proxy, `req.ip` stays the proxy unless Express `trust proxy` is set;
+ * that would make every agent share one per-IP bucket (reviewer 2026-11).
+ */
+export function isPrivateOrLoopbackIp(ip: string | undefined): boolean {
+  if (typeof ip !== "string" || ip.length === 0) return false;
+  const normalized = ip.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  const v4 = normalized.replace(/^::ffff:/, "");
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(v4)) {
+    const [a, b] = v4.split(".").map(Number) as [number, number, number, number];
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  }
+  return (
+    normalized === "::1" ||
+    normalized === "::" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    /^fe[89ab]/.test(normalized)
+  );
+}
+
 export function paythosMerchant(config: MerchantVerifierConfig) {
   const accumulator = new VoucherAccumulator(config);
   const challengeFor = config.challengeFor;
+  let warnedPrivateIp = false;
 
   return (req: Request, res: Response, next: NextFunction): void => {
     const headers = new Headers();
@@ -71,6 +101,19 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
       return;
     }
 
+    // Proxy misconfiguration: a private/loopback req.ip means all clients share
+    // one bucket. Warn once with the fix; do not fail spend paths.
+    if (
+      process.env.NODE_ENV !== "test" &&
+      !warnedPrivateIp &&
+      !req.app.get("trust proxy") &&
+      isPrivateOrLoopbackIp(req.ip)
+    ) {
+      warnedPrivateIp = true;
+      console.warn(
+        "[paythos] req.ip is private/loopback; behind a proxy set app.set('trust proxy', <hops or subnet>) so per-IP limits key on the real client",
+      );
+    }
     const outcome: VerifyOutcome = accumulator.verifyPayment(headers, req.ip);
     if (!outcome.ok) {
       res.status(outcome.status);

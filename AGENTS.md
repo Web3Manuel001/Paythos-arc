@@ -74,8 +74,8 @@ The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the cur
 
 ```bash
 cd contracts && forge test                        # 36 tests (unit + invariant fuzz)
-cd sdk/typescript && npx tsc --noEmit && npm test # 136 tests, strict TS
-cd sdk/python && .venv/bin/python -m pytest tests # 112 tests (asyncio_mode=auto)
+cd sdk/typescript && npx tsc --noEmit && npm test # 141 tests, strict TS
+cd sdk/python && .venv/bin/python -m pytest tests # 116 tests (asyncio_mode=auto)
 cd sdk/typescript && npm run bench:verify -- 2000 --enforce   # release hardware only
 ```
 

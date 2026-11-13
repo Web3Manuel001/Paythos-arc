@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
+import logging
 import re
 import math
 import time
@@ -36,6 +38,17 @@ from .types import (
 )
 
 FlushCallback = Callable[["FlushPlan"], Awaitable[None]]
+
+
+def _is_private_or_loopback(host: str | None) -> bool:
+    """True for private/loopback/link-local/unspecified client addresses."""
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified
 
 
 class MerchantChallengeContext(BaseModel):
@@ -473,6 +486,8 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
             },
         )
 
+    warned_private_ip = [False]
+
     class PaythosMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
             headers = dict(request.headers)
@@ -490,6 +505,13 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
                     )
                 return _challenge_response(request)
             client_id = request.client.host if request.client is not None else None
+            if not warned_private_ip[0] and _is_private_or_loopback(client_id):
+                warned_private_ip[0] = True
+                logging.getLogger("paythos.middleware").warning(
+                    "request.client.host is private/loopback; behind a proxy run uvicorn "
+                    "with --proxy-headers --forwarded-allow-ips=<proxy> so per-IP limits "
+                    "key on the real client"
+                )
             outcome = accumulator.verify_payment(headers, client_id)
             if not outcome.ok:
                 response_headers = {"accept-payment": "PAYTHOS/x402v2"}

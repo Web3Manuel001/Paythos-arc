@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import time
 
 import httpx
 import pytest
@@ -10,6 +11,7 @@ from eth_account import Account
 
 from paythos import (
     AgentVoucherSigner,
+    PaythosError,
     HoldLedger,
     PaythosClient,
     RequestAttempt,
@@ -20,6 +22,7 @@ from paythos import (
     parse_metering_report,
     parse_usd_to_micro,
     recover_metering_signer,
+    attest_stream,
     sign_metering_report,
     stream_id_for,
 )
@@ -187,6 +190,24 @@ def test_hold_ledger_release_is_yopo_and_idempotent():
     assert ledger.active_hold_micro() == 0
     ledger.release(sid)  # idempotent
     assert ledger.get(sid).state == "released"
+
+
+def test_hold_ledger_sweep_expired_releases_abandoned_holds():
+    ledger = HoldLedger()
+    old = stream_id_for("https://x", "old", 10)
+    fresh = stream_id_for("https://x", "fresh", 11)
+    ledger.lock(old, MERCHANT, 10_000)
+    ledger.lock(fresh, MERCHANT, 5_000)
+    now = time.time()
+    ledger.get(old).created_at = now - 120
+    ledger.get(fresh).created_at = now - 1
+    released = ledger.sweep_expired(60, now=now)
+    assert [h.stream_id for h in released] == [old]
+    assert ledger.get(old).state == "released"
+    assert ledger.get(fresh).state == "active"
+    assert ledger.active_hold_micro() == 5_000
+    with pytest.raises(ValueError):
+        ledger.sweep_expired(0)
 
 
 def test_hold_ledger_refuses_bad_operations():
@@ -471,6 +492,68 @@ async def test_concurrent_holds_cannot_exceed_budget_while_approval_pending():
     declined = await first
     assert declined.ok is False
     assert declined.hold_state == "released"
+    assert client.holds.active_hold_micro() == 0
+    assert signer.ledger_snapshot() == []
+    await client.aclose()
+
+
+def test_attest_stream_echoes_client_nonce():
+    attestation = attest_stream(MERCHANT_ACCT, {"x-paythos-stream": "client-nonce-1"}, "0.0025")
+    assert attestation.stream_id == "client-nonce-1"
+    assert attestation.report.stream_id == "client-nonce-1"
+    assert recover_metering_signer(attestation.report) == MERCHANT
+    assert json.loads(attestation.body)["streamId"] == "client-nonce-1"
+    with pytest.raises(PaythosError, match="x-paythos-stream"):
+        attest_stream(MERCHANT_ACCT, {}, "0.0025")
+    with pytest.raises(PaythosError, match="unparseable"):
+        attest_stream(MERCHANT_ACCT, {"x-paythos-stream": "n"}, "not-a-number")
+
+
+@pytest.mark.asyncio
+async def test_stream_approval_deadline_releases_hold():
+    async def never(_summary):
+        await asyncio.Event().wait()
+        return True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return challenge_response(upto_challenge("5.00"))
+
+    client, signer = make_client(
+        handler,
+        approval_timeout_seconds=0.01,
+        approve_with_human=never,
+    )
+    result = await client.stream_with_x402(
+        RequestAttempt(url="https://m.example.com/stream", prompt="approval timeout")
+    )
+    assert result.ok is False
+    assert result.error.code == "human_approval_required"
+    assert "timed out" in result.error.detail
+    assert result.hold_state == "released"
+    assert client.holds.active_hold_micro() == 0
+    assert signer.ledger_snapshot() == []
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_open_deadline_releases_hold():
+    calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return challenge_response(upto_challenge("0.01"))
+        await asyncio.sleep(1)
+        return httpx.Response(200, text="too late")
+
+    client, signer = make_client(handler, stream_open_timeout_seconds=0.01)
+    result = await client.stream_with_x402(
+        RequestAttempt(url="https://m.example.com/stream", prompt="open timeout")
+    )
+    assert result.ok is False
+    assert result.error.code == "network_error"
+    assert "timed out" in result.error.detail
+    assert result.hold_state == "released"
     assert client.holds.active_hold_micro() == 0
     assert signer.ledger_snapshot() == []
     await client.aclose()

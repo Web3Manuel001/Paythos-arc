@@ -42,6 +42,12 @@ export interface PaythosClientOptions {
   tiers?: TierThresholds;
   /** Outbound-loop limiter (INV-M6). Defaults: 100 burst / 10 per second. */
   rateLimit?: { capacity: number; refillPerSecond: number };
+  /** Tier-2 human approval deadline. Default 120s; timeout releases the hold. */
+  approvalTimeoutMs?: number;
+  /** Stream-open fetch deadline. Default 30s; timeout releases the hold. */
+  streamOpenTimeoutMs?: number;
+  /** Active hold TTL swept before budget checks. Default 10 minutes. */
+  holdTtlMs?: number;
   /**
    * Tier-2 human gate. Return true ONLY after cryptographic confirmation
    * (webhook/chat callback). Fail closed: absent provider ⇒ Tier 2 denies.
@@ -122,6 +128,9 @@ export class PaythosClient {
   readonly #gofer: GoferPolicyEngine;
   readonly #bucket: TokenBucket;
   readonly #holds = new HoldLedger();
+  readonly #approvalTimeoutMs: number;
+  readonly #streamOpenTimeoutMs: number;
+  readonly #holdTtlMs: number;
   /** Per-client nonce: identical url+prompt streams in the same ms must not collide. */
   #streamSeq = 0;
   #allowanceMicro: bigint;
@@ -133,6 +142,9 @@ export class PaythosClient {
     this.#gofer = new GoferPolicyEngine(options.tiers);
     this.#bucket = new TokenBucket(options.rateLimit ?? { capacity: 100, refillPerSecond: 10 });
     this.#allowanceMicro = options.allowanceMicro ?? DEFAULT_ALLOWANCE_MICRO;
+    this.#approvalTimeoutMs = positiveMs(options.approvalTimeoutMs, 120_000, "approvalTimeoutMs");
+    this.#streamOpenTimeoutMs = positiveMs(options.streamOpenTimeoutMs, 30_000, "streamOpenTimeoutMs");
+    this.#holdTtlMs = positiveMs(options.holdTtlMs, 600_000, "holdTtlMs");
   }
 
   /** Active `upto` hold ledger (YOPO ceiling locks, never vouchers). */
@@ -181,11 +193,22 @@ export class PaythosClient {
     if (!gate.ok) return { ok: false, error: gate.error };
 
     if (gate.needsHuman) {
-      const approved = await this.confirmTier2({
-        amountUsd: formatMicroUsd(gate.amountMicro),
-        merchant: challenge.payTo,
-        memo: gate.memo,
-      });
+      let approved: boolean;
+      try {
+        approved = await withDeadline(
+          this.confirmTier2({
+            amountUsd: formatMicroUsd(gate.amountMicro),
+            merchant: challenge.payTo,
+            memo: gate.memo,
+          }),
+          this.#approvalTimeoutMs,
+        );
+      } catch (err) {
+        if (err instanceof DeadlineExceeded) {
+          return { ok: false, error: humanApprovalFailure(`${gate.reason} (approval timed out)`) };
+        }
+        throw err;
+      }
       if (!approved) {
         return { ok: false, error: humanApprovalFailure(gate.reason) };
       }
@@ -253,6 +276,7 @@ export class PaythosClient {
     }
 
     await this.refreshAllowance();
+    this.#holds.sweepExpired(this.#holdTtlMs);
     const ceiling = parseMaxMicro(challenge);
     const free = this.#allowanceMicro > this.#holds.activeHoldMicro()
       ? this.#allowanceMicro - this.#holds.activeHoldMicro()
@@ -285,13 +309,23 @@ export class PaythosClient {
     if (gate.needsHuman) {
       let approved: boolean;
       try {
-        approved = await this.confirmTier2({
-          amountUsd: formatMicroUsd(gate.amountMicro),
-          merchant: challenge.payTo,
-          memo: gate.memo,
-        });
+        approved = await withDeadline(
+          this.confirmTier2({
+            amountUsd: formatMicroUsd(gate.amountMicro),
+            merchant: challenge.payTo,
+            memo: gate.memo,
+          }),
+          this.#approvalTimeoutMs,
+        );
       } catch (err) {
         this.#holds.release(streamId);
+        if (err instanceof DeadlineExceeded) {
+          return {
+            ok: false,
+            error: humanApprovalFailure(`${gate.reason} (approval timed out)`),
+            holdState: "released",
+          };
+        }
         throw err;
       }
       if (!approved) {
@@ -302,17 +336,30 @@ export class PaythosClient {
 
     // ---- 4. open the stream UNPAID ----
     const streamStartedAt = Date.now();
+    const controller = new AbortController();
+    const openTimer = setTimeout(() => controller.abort(), this.#streamOpenTimeoutMs);
     let stream: Response;
     try {
-      stream = await this.rawFetchBuilder(attempt, undefined, undefined, streamId);
+      stream = await withDeadline(
+        this.rawFetchBuilder(attempt, undefined, undefined, streamId, controller.signal),
+        this.#streamOpenTimeoutMs,
+      );
     } catch (err) {
       this.#holds.release(streamId);
       this.#observe(challenge.payTo, { ok: false, latencyMs: Date.now() - streamStartedAt, valid: false });
+      const timedOut = err instanceof DeadlineExceeded;
       return {
         ok: false,
-        error: { code: "network_error", detail: `stream open failed: ${String(err)}` },
+        error: {
+          code: "network_error",
+          detail: timedOut
+            ? `stream open timed out after ${this.#streamOpenTimeoutMs}ms`
+            : `stream open failed: ${String(err)}`,
+        },
         holdState: "released",
       };
+    } finally {
+      clearTimeout(openTimer);
     }
     if (!stream.ok || !stream.body) {
       this.#holds.release(streamId);
@@ -516,6 +563,7 @@ export class PaythosClient {
     challenge: PaymentChallenge,
     prompt: string,
   ): GateDecision {
+    this.#holds.sweepExpired(this.#holdTtlMs);
     const amountMicro = parseMaxMicro(challenge);
     const memo = GoferPolicyEngine.intentMemo(prompt, Math.floor(Date.now() / 1000));
 
@@ -572,6 +620,7 @@ export class PaythosClient {
     voucher?: Voucher,
     signature?: string,
     streamId?: string,
+    signal?: AbortSignal,
   ): Promise<Response> {
     const headers = new Headers(attempt.headers);
     if (streamId !== undefined) {
@@ -585,6 +634,7 @@ export class PaythosClient {
       }));
     }
     const request: RequestInit = { method: attempt.method ?? "GET", headers };
+    if (signal !== undefined) request.signal = signal;
     if (attempt.body !== undefined) request.body = attempt.body;
     try {
       return await (this.options.fetch ?? globalThis.fetch)(attempt.url, request);
@@ -626,6 +676,27 @@ export function humanApprovalFailure(reason: string): PolicyEvaluatedFailure {
 
 function networkFail(status: number): ExecutedResult {
   return { ok: false, error: { code: "network_error", detail: `HTTP ${status}` }, status };
+}
+
+class DeadlineExceeded extends Error {}
+
+/** Race a promise against a hard deadline, always clearing the timer. */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new DeadlineExceeded(`deadline exceeded after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+function positiveMs(value: number | undefined, fallback: number, name: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isFinite(resolved) || resolved <= 0) {
+    throw new RangeError(`${name} must be > 0 (got ${String(resolved)})`);
+  }
+  return resolved;
 }
 
 /**

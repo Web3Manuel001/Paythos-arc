@@ -7,6 +7,7 @@ YOPO for ``upto`` streams: tokens for unrendered output are NEVER signed.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import time
@@ -102,6 +103,9 @@ class PaythosClient:
         rate_limit: tuple[int, float] = (100, 10.0),
         approve_with_human: HumanGate | None = None,
         allowance_micro: int = DEFAULT_ALLOWANCE_MICRO,
+        approval_timeout_seconds: float = 120.0,
+        stream_open_timeout_seconds: float = 30.0,
+        hold_ttl_seconds: float = 600.0,
         http: httpx.AsyncClient | None = None,
     ) -> None:
         self.signer = signer
@@ -116,6 +120,16 @@ class PaythosClient:
         self._bucket = TokenBucket(capacity=rate_limit[0], refill_per_second=rate_limit[1])
         self._human_gate = approve_with_human
         self._allowance_micro = allowance_micro
+        for name, value in (
+            ("approval_timeout_seconds", approval_timeout_seconds),
+            ("stream_open_timeout_seconds", stream_open_timeout_seconds),
+            ("hold_ttl_seconds", hold_ttl_seconds),
+        ):
+            if not isinstance(value, (int, float)) or value <= 0:
+                raise ValueError(f"{name} must be > 0 (got {value!r})")
+        self._approval_timeout_seconds = float(approval_timeout_seconds)
+        self._stream_open_timeout_seconds = float(stream_open_timeout_seconds)
+        self._hold_ttl_seconds = float(hold_ttl_seconds)
         self._http = http or httpx.AsyncClient(follow_redirects=True)
 
     def dry_run(self, challenge: PaymentChallenge) -> PreFlightReport:
@@ -123,6 +137,7 @@ class PaythosClient:
         return self._gofer.pre_flight(self._context_for(challenge))
 
     def gate(self, challenge: PaymentChallenge, prompt: str) -> GateDecision:
+        self.holds.sweep_expired(self._hold_ttl_seconds)
         amount_micro = parse_max_micro(challenge)
         memo = GoferPolicyEngine.intent_memo(prompt, int(time.time()))
         if not self._bucket.try_consume().allowed:
@@ -152,6 +167,15 @@ class PaythosClient:
             return False  # fail closed
         return await self._human_gate(summary)
 
+    async def _confirm_with_deadline(self, summary: HumanApprovalSummary) -> bool | None:
+        """Await tier-2 review; ``None`` means the deadline expired (fail closed)."""
+        try:
+            return await asyncio.wait_for(
+                self.confirm_tier2(summary), timeout=self._approval_timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            return None
+
     async def fetch_with_x402(self, attempt: RequestAttempt) -> ExecutedResult:
         """GET → 402 → challenge decode → GOFER gate → voucher → retry once."""
         first = await self._raw_fetch(attempt)
@@ -172,7 +196,7 @@ class PaythosClient:
             return ExecutedResult(ok=False, error=gate.error)
 
         if gate.needs_human:
-            approved = await self.confirm_tier2(
+            approved = await self._confirm_with_deadline(
                 {
                     "amount_usd": format_micro_usd(gate.amount_micro),
                     "merchant": challenge.pay_to,
@@ -180,6 +204,14 @@ class PaythosClient:
                     "kind": "tier2_review",
                 }
             )
+            if approved is None:
+                return ExecutedResult(
+                    ok=False,
+                    error=PolicyEvaluatedFailure(
+                        code="human_approval_required",
+                        detail=f"{gate.reason} (approval timed out)",
+                    ),
+                )
             if not approved:
                 return ExecutedResult(
                     ok=False,
@@ -308,6 +340,7 @@ class PaythosClient:
                 ),
             )
 
+        self.holds.sweep_expired(self._hold_ttl_seconds)
         ceiling = parse_max_micro(challenge)
         active_hold = self.holds.active_hold_micro()
         free = self._allowance_micro - active_hold if self._allowance_micro > active_hold else 0
@@ -337,7 +370,7 @@ class PaythosClient:
         self.holds.lock(stream_id, challenge.pay_to, ceiling)
         if gate.needs_human:
             try:
-                approved = await self.confirm_tier2(
+                approved = await self._confirm_with_deadline(
                     {
                         "amount_usd": format_micro_usd(gate.amount_micro),
                         "merchant": challenge.pay_to,
@@ -348,6 +381,16 @@ class PaythosClient:
             except Exception:
                 self.holds.release(stream_id)
                 raise
+            if approved is None:
+                self.holds.release(stream_id)
+                return StreamedResult(
+                    ok=False,
+                    error=PolicyEvaluatedFailure(
+                        code="human_approval_required",
+                        detail=f"{gate.reason} (approval timed out)",
+                    ),
+                    hold_state="released",
+                )
             if not approved:
                 self.holds.release(stream_id)
                 return StreamedResult(
@@ -367,7 +410,24 @@ class PaythosClient:
             content=attempt.content,
         )
         try:
-            stream = await self._http.send(request, stream=True)
+            stream = await asyncio.wait_for(
+                self._http.send(request, stream=True),
+                timeout=self._stream_open_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            self.holds.release(stream_id)
+            self._observe(
+                challenge.pay_to,
+                MerchantObservation(ok=False, latency_ms=_elapsed_ms(stream_started_at), valid=False),
+            )
+            return StreamedResult(
+                ok=False,
+                error=PolicyEvaluatedFailure(
+                    code="network_error",
+                    detail=f"stream open timed out after {self._stream_open_timeout_seconds:g}s",
+                ),
+                hold_state="released",
+            )
         except httpx.HTTPError as exc:
             self.holds.release(stream_id)
             self._observe(

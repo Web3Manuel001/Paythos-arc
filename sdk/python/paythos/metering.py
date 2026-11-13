@@ -16,6 +16,7 @@ from eth_account import Account
 from eth_account.messages import encode_defunct
 
 from .errors import PaythosError
+from .types import X_PAYTHOS_STREAM_HEADER, parse_usd_to_micro
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,58 @@ def sign_metering_report(account: Account, report: MeteringReport) -> MeteringRe
         stream_id=report.stream_id,
         consumed=report.consumed,
         signature=signature if signature.startswith("0x") else "0x" + signature,
+    )
+
+
+@dataclass(frozen=True)
+class StreamAttestation:
+    stream_id: str
+    report: MeteringReport
+    #: Terminal response body (JSON report) — send it as the last stream frame.
+    body: str
+    headers: dict[str, str]
+
+
+def attest_stream(account: Account, headers: object, consumed: str) -> StreamAttestation:
+    """Merchant helper: attest a finished stream against the client's nonce.
+
+    Reads ``X-PAYTHOS-STREAM`` from the stream-open request headers; a report
+    echoing any other id is rejected by the client as a replay (reviewer N2).
+    """
+    if isinstance(headers, dict):
+        lowered = {str(k).lower(): str(v) for k, v in headers.items()}
+    else:
+        raw = getattr(headers, "items", None)
+        if not callable(raw):
+            raise PaythosError("invalid_challenge", "headers must be a mapping")
+        lowered = {str(k).lower(): str(v) for k, v in raw()}
+    stream_id = lowered.get(X_PAYTHOS_STREAM_HEADER)
+    if not stream_id:
+        raise PaythosError(
+            "invalid_challenge", f"missing {X_PAYTHOS_STREAM_HEADER} on the stream open"
+        )
+    try:
+        parse_usd_to_micro(consumed)
+    except ValueError as exc:
+        raise PaythosError("invalid_challenge", f'unparseable consumed amount: "{consumed}"') from exc
+    report = sign_metering_report(
+        account,
+        MeteringReport(scheme="upto", units="USD", stream_id=stream_id, consumed=consumed, signature=""),
+    )
+    body = json.dumps(
+        {
+            "scheme": report.scheme,
+            "units": report.units,
+            "streamId": report.stream_id,
+            "consumed": report.consumed,
+            "signature": report.signature,
+        }
+    )
+    return StreamAttestation(
+        stream_id=stream_id,
+        report=report,
+        body=body,
+        headers={"content-type": "application/json"},
     )
 
 

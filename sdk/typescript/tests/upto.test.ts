@@ -8,7 +8,13 @@ import { Wallet } from "ethers";
 import { AgentVoucherSigner } from "../src/signer/voucherSigner.js";
 import { PaythosClient, StreamHooks, StreamedResult } from "../src/client/paythosClient.js";
 import { HoldLedger } from "../src/client/holdLedger.js";
-import { MeteringReport, recoverMeteringSigner, signMeteringReport, meteringCanonical } from "../src/client/metering.js";
+import {
+  MeteringReport,
+  attestStream,
+  recoverMeteringSigner,
+  signMeteringReport,
+  meteringCanonical,
+} from "../src/client/metering.js";
 import { PaymentChallenge, formatMicroUsd } from "../src/types.js";
 import { TEST_VAULT, TESTNET, AR_NATIVE_USDC, ephemeralPrivateKey } from "./helpers.js";
 
@@ -160,6 +166,23 @@ describe("HoldLedger — unit invariants", () => {
     expect(() => ledger.settle("0xunknown", 1n)).toThrow(/unknown hold/);
     ledger.settle(sid, 2_000n);
     expect(() => ledger.settle(sid, 2_000n)).toThrow(/already settled/);
+  });
+
+  it("sweepExpired releases abandoned active holds after the TTL", () => {
+    const ledger = new HoldLedger();
+    const old = HoldLedger.streamIdFor("old", "m", 1);
+    const fresh = HoldLedger.streamIdFor("fresh", "m", 1);
+    ledger.lock(old, MERCHANT, 10_000n);
+    ledger.lock(fresh, MERCHANT, 5_000n);
+    const now = Date.now();
+    ledger.get(old)!.createdAt = now - 120_000;
+    ledger.get(fresh)!.createdAt = now - 1_000;
+    const released = ledger.sweepExpired(60_000, now);
+    expect(released.map((h) => h.streamId)).toEqual([old]);
+    expect(ledger.get(old)!.state).toBe("released");
+    expect(ledger.get(fresh)!.state).toBe("active");
+    expect(ledger.activeHoldMicro()).toBe(5_000n);
+    expect(() => ledger.sweepExpired(0)).toThrow(/TTL/);
   });
 
   it("streamIdFor is deterministic and distinct per input", () => {
@@ -412,6 +435,50 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
     expect(clientError(declined).holdState).toBe("released");
     expect(fix.client.holds.activeHoldMicro()).toBe(0n);
     expect(fix.signer.ledgerSnapshot()).toHaveLength(0);
+  });
+
+  it("approval deadline releases the hold and fails closed (reviewer N3)", async () => {
+    const never = new Promise<boolean>(() => undefined);
+    const fix = makeClient({ approvalTimeoutMs: 20, approveWithHuman: () => never });
+    enqueueChallenge(fix, uptoChallenge("5.00"));
+    const result = await runStream(fix);
+    const failure = clientError(result);
+    expect(failure.error.code).toBe("human_approval_required");
+    expect(failure.error.detail).toMatch(/timed out/);
+    expect(failure.holdState).toBe("released");
+    expect(fix.client.holds.activeHoldMicro()).toBe(0n);
+    expect(fix.signer.ledgerSnapshot()).toHaveLength(0);
+  });
+
+  it("stream-open deadline releases the hold and signs nothing", async () => {
+    const fix = makeClient({ streamOpenTimeoutMs: 20 });
+    enqueueChallenge(fix, uptoChallenge("0.01"));
+    fix.queue.push(() => new Promise<Response>(() => undefined));
+    const result = await runStream(fix);
+    const failure = clientError(result);
+    expect(failure.error.code).toBe("network_error");
+    expect(failure.error.detail).toMatch(/timed out/);
+    expect(failure.holdState).toBe("released");
+    expect(fix.client.holds.activeHoldMicro()).toBe(0n);
+    expect(fix.signer.ledgerSnapshot()).toHaveLength(0);
+  });
+
+  it("attestStream echoes the client nonce for a payable terminal frame", async () => {
+    const attestation = await attestStream(
+      merchantWallet,
+      { "x-paythos-stream": "client-nonce-1" },
+      "0.0025",
+    );
+    expect(attestation.streamId).toBe("client-nonce-1");
+    expect(attestation.report.streamId).toBe("client-nonce-1");
+    expect(recoverMeteringSigner(attestation.report)).toBe(MERCHANT);
+    expect(JSON.parse(attestation.body)["streamId"]).toBe("client-nonce-1");
+    await expect(
+      attestStream(merchantWallet, {}, "0.0025"),
+    ).rejects.toThrow(/X-PAYTHOS-STREAM|missing/);
+    await expect(
+      attestStream(merchantWallet, { "x-paythos-stream": "n" }, "not-a-number"),
+    ).rejects.toThrow(/unparseable/);
   });
 
   it("tier-2 ceiling with no human approver fails closed BEFORE any stream or hold", async () => {

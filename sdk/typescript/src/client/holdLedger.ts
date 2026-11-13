@@ -78,6 +78,27 @@ export class HoldLedger {
     entry.settledAt = Date.now();
   }
 
+  /**
+   * TTL sweep: release ACTIVE holds older than `ttlMs`. Holds are budget
+   * reservations, not vouchers; an abandoned stream must not pin headroom
+   * forever (reviewer 2026-11).
+   */
+  sweepExpired(ttlMs: number, now: number = Date.now()): HoldEntry[] {
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+      throw new RangeError(`hold TTL must be > 0 (got ${String(ttlMs)})`);
+    }
+    const released: HoldEntry[] = [];
+    for (const entry of this.#holds.values()) {
+      if (entry.state !== "active") continue;
+      if (now - entry.createdAt >= ttlMs) {
+        entry.state = "released";
+        entry.releasedAt = now;
+        released.push(entry);
+      }
+    }
+    return released;
+  }
+
   /** Query — returns undefined when unknown. */
   get(streamId: string): HoldEntry | undefined {
     return this.#holds.get(streamId);

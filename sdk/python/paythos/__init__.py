@@ -24,6 +24,8 @@ from .errors import PaythosError
 from .hold_ledger import HoldEntry, HoldLedger, HoldState, stream_id_for
 from .metering import (
     MeteringReport,
+    StreamAttestation,
+    attest_stream,
     metering_canonical,
     parse_metering_report,
     recover_metering_signer,
@@ -126,6 +128,8 @@ __all__ = [
     "HoldState",
     "stream_id_for",
     "MeteringReport",
+    "StreamAttestation",
+    "attest_stream",
     "metering_canonical",
     "parse_metering_report",
     "recover_metering_signer",

@@ -10,7 +10,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { AgentVoucherSigner } from "../src/signer/voucherSigner.js";
 import { VoucherAccumulator } from "../src/middleware/merchant.js";
-import { paythosMerchant } from "../src/middleware/express.js";
+import { isPrivateOrLoopbackIp, paythosMerchant } from "../src/middleware/express.js";
 import { serializeVoucher } from "../src/client/paythosClient.js";
 import { PAYMENT_SIGNATURE_HEADER } from "../src/types.js";
 import { TEST_MERCHANT, TEST_VAULT, TESTNET, AR_NATIVE_USDC, ephemeralPrivateKey } from "./helpers.js";
@@ -62,6 +62,17 @@ describe("TokenBucket — fail-closed configuration", () => {
     expect(() => new TokenBucket({ capacity: 0, refillPerSecond: 1 })).toThrow(/capacity/);
     expect(() => new TokenBucket({ capacity: 10, refillPerSecond: 0 })).toThrow(/refill/);
     expect(() => new TokenBucket({ capacity: 10, refillPerSecond: Number.NaN })).toThrow(/refill/);
+  });
+});
+
+describe("proxy-aware client identity", () => {
+  it("classifies private/loopback/proxied addresses", () => {
+    for (const ip of ["127.0.0.1", "::1", "::ffff:10.1.2.3", "172.20.0.9", "192.168.1.4", "169.254.1.1", "fc00::1", "fe80::1"]) {
+      expect(isPrivateOrLoopbackIp(ip)).toBe(true);
+    }
+    for (const ip of ["8.8.8.8", "203.0.113.7", "2606:4700::1111", "", undefined]) {
+      expect(isPrivateOrLoopbackIp(ip)).toBe(false);
+    }
   });
 });
 
