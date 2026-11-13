@@ -114,7 +114,7 @@ Every mount gates: no payment headers gets a 402 challenge when `challengeFor` i
 
 Copy the block in [`mcp-server/paythos.mcp.json`](mcp-server/paythos.mcp.json) into Claude Desktop / Cursor and set env vars only — no config code. Tools: `get_agent_budget`, `dry_run_errand`, `settle_invoice`, `query_x402_resource`. Run locally with `cd sdk/typescript && npm run mcp`.
 
-For a real funded Arc Testnet proof, run `npm run e2e:mcp-live` from `sdk/typescript` after setting `PAYTHOS_DEPLOYER_KEY` and an existing v3 `PAYTHOS_VAULT_ADDRESS`. The harness authorizes a fresh agent, boots the MCP server over stdio, reads the live on-chain budget, signs two cumulative vouchers, settles them through `claimVoucher()`, and asserts `claimed()`, epoch, and the fee split. Keys come from `.env`/the environment only; the ephemeral key may be omitted and is generated per run.
+For a real funded Arc Testnet proof, run `npm run e2e:mcp-live` from `sdk/typescript` after setting `PAYTHOS_DEPLOYER_KEY`, an existing v3 `PAYTHOS_VAULT_ADDRESS`, and the actual merchant payee in `PAYTHOS_MERCHANT_ADDRESS`. The harness authorizes a fresh agent, boots the MCP server over stdio, reads the live on-chain budget, signs two cumulative vouchers against that merchant's `payTo`, settles them through `claimVoucher()`, and asserts `claimed()`, epoch, fee split, and the merchant's USDC balance delta. Keys come from `.env`/the environment only; the ephemeral key may be omitted and is generated per run.
 
 ## Chain constants
 

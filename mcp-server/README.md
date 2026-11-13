@@ -34,7 +34,8 @@ PAYTHOS_EPHEMERAL_KEY=0x… PAYTHOS_VAULT_ADDRESS=0x… PAYTHOS_AGENT_EPOCH=1 \
 
 ## Funded Arc Testnet smoke
 
-With the vault owner key funded and an existing v3 vault:
+With the vault owner key funded, an existing v3 vault, and the merchant payee
+set in `PAYTHOS_MERCHANT_ADDRESS`:
 
 ```bash
 cd sdk/typescript
@@ -43,4 +44,5 @@ npm run e2e:mcp-live
 
 It authorizes a fresh ephemeral agent, runs the MCP handshake plus
 `get_agent_budget` / `dry_run_errand` / `settle_invoice`, then settles the
-returned cumulative voucher on-chain and checks `claimed()` and the fee split.
+returned cumulative voucher on-chain and checks `claimed()`, the fee split, and
+that the merchant's USDC balance increased by the net payout.

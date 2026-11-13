@@ -21,6 +21,7 @@ __pycache__/
 # Secrets — never commit keys (AGENTS.md rule 5)
 .env
 .env.*
+!sdk/typescript/.env.example
 *.pem
 *.key
 

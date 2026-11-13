@@ -12,7 +12,7 @@
  *   PAYTHOS_DEPLOYER_KEY=0x…        # vault owner, funded with USDC
  *   PAYTHOS_VAULT_ADDRESS=0x…       # existing v3 vault
  *   PAYTHOS_EPHEMERAL_KEY=0x…       # optional; generated per run when absent
- *   PAYTHOS_MERCHANT_ADDRESS=0x…    # optional; defaults to the owner
+ *   PAYTHOS_MERCHANT_ADDRESS=0x…    # required: the merchant payee being purchased from
  *   npm run e2e:mcp-live
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -129,9 +129,7 @@ async function main(): Promise<void> {
   const deployerKey = envOrExit("PAYTHOS_DEPLOYER_KEY");
   const vaultAddress = getAddress(envOrExit("PAYTHOS_VAULT_ADDRESS"));
   const ephemeralKey = process.env.PAYTHOS_EPHEMERAL_KEY?.trim() || Wallet.createRandom().privateKey;
-  const merchant = process.env.PAYTHOS_MERCHANT_ADDRESS
-    ? getAddress(process.env.PAYTHOS_MERCHANT_ADDRESS)
-    : new Wallet(deployerKey).address;
+  const merchant = getAddress(envOrExit("PAYTHOS_MERCHANT_ADDRESS"));
 
   const provider = new JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true, batchMaxCount: 1 });
   const network = await provider.getNetwork();
@@ -156,6 +154,9 @@ async function main(): Promise<void> {
     throw new Error(`deployer ${owner.address} is not vault owner ${vaultOwner}`);
   }
   if (getAddress(token) !== ARC_USDC) throw new Error("vault settlement token is not Arc USDC");
+  if (merchant === owner.address) {
+    throw new Error("PAYTHOS_MERCHANT_ADDRESS must be the merchant payee, not the vault owner");
+  }
 
   const agent = new AgentVoucherSigner({
     privateKey: ephemeralKey,
@@ -182,6 +183,7 @@ async function main(): Promise<void> {
   console.log("  authorizeAgent  :", authorize.hash, "epoch", epoch);
   console.log("  allowMerchant   :", allow.hash);
 
+  const merchantBalanceBefore = (await usdc.balanceOf(merchant)) as bigint;
   const claimUsd = usd("0.10");
   if ((vaultBalance as bigint) < claimUsd) {
     const deposit = usd("0.50");
@@ -284,11 +286,19 @@ async function main(): Promise<void> {
     const claimed = (await vault.claimed(agent.agentKey, merchant)) as bigint;
     if (claimed !== claimUsd) throw new Error(`on-chain claimed ${claimed} != ${claimUsd}`);
     const fee = (claimUsd * (feeBps as bigint)) / 10_000n;
+    const net = claimUsd - fee;
+    const merchantBalanceAfter = (await usdc.balanceOf(merchant)) as bigint;
+    if (merchantBalanceAfter - merchantBalanceBefore !== net) {
+      throw new Error(
+        `merchant payout mismatch: received ${merchantBalanceAfter - merchantBalanceBefore}, expected ${net}`,
+      );
+    }
     console.log("  claimVoucher    :", claim.hash, "block", receipt?.blockNumber);
     console.log(
       "  claimed()       :",
-      `${formatMicroUsd(claimed)} USDC | fee ${formatMicroUsd(fee)} net ${formatMicroUsd(claimUsd - fee)}`,
+      `${formatMicroUsd(claimed)} USDC | fee ${formatMicroUsd(fee)} net ${formatMicroUsd(net)}`,
     );
+    console.log("  merchant payout :", `${formatMicroUsd(net)} USDC received (balance delta verified)`);
     console.log("\nRESULT: PASS — funded Arc Testnet MCP + SDK + on-chain settlement");
   } finally {
     await mcp.stop();
