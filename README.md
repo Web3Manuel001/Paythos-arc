@@ -23,7 +23,9 @@ Live evidence on Arc Testnet (PROTOCOL v3, epoch-bound vouchers): vault
 epoch-synced `claimVoucher` tx `0xa874d4f291be7a1eb2210e9c7ebda4f765e2f3bab8998095af7d17e597876c69`
 (block 71523116, 150 bps fee, replay rejected), plus the live INV-6 proof: re-authorization
 bumped epoch 1→2, a stale-epoch voucher reverted `SessionEpochMismatch`, and the
-live-epoch claim settled.
+live-epoch claim settled. Funded MCP+SDK smoke (`npm run e2e:mcp-live`) settled two
+cumulative vouchers (0.04 + 0.06 USDC) through the MCP `settle_invoice` tool and
+`claimVoucher()` in tx `0xfcd2de00…d1e587` (block 72232591, 150 bps fee).
 
 ## Architecture at a glance
 
@@ -111,6 +113,8 @@ Every mount gates: no payment headers gets a 402 challenge when `challengeFor` i
 ### MCP server
 
 Copy the block in [`mcp-server/paythos.mcp.json`](mcp-server/paythos.mcp.json) into Claude Desktop / Cursor and set env vars only — no config code. Tools: `get_agent_budget`, `dry_run_errand`, `settle_invoice`, `query_x402_resource`. Run locally with `cd sdk/typescript && npm run mcp`.
+
+For a real funded Arc Testnet proof, run `npm run e2e:mcp-live` from `sdk/typescript` after setting `PAYTHOS_DEPLOYER_KEY` and an existing v3 `PAYTHOS_VAULT_ADDRESS`. The harness authorizes a fresh agent, boots the MCP server over stdio, reads the live on-chain budget, signs two cumulative vouchers, settles them through `claimVoucher()`, and asserts `claimed()`, epoch, and the fee split. Keys come from `.env`/the environment only; the ephemeral key may be omitted and is generated per run.
 
 ## Chain constants
 

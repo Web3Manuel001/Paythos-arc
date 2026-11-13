@@ -31,3 +31,16 @@ cd sdk/typescript
 PAYTHOS_EPHEMERAL_KEY=0x… PAYTHOS_VAULT_ADDRESS=0x… PAYTHOS_AGENT_EPOCH=1 \
   npm run mcp
 ```
+
+## Funded Arc Testnet smoke
+
+With the vault owner key funded and an existing v3 vault:
+
+```bash
+cd sdk/typescript
+npm run e2e:mcp-live
+```
+
+It authorizes a fresh ephemeral agent, runs the MCP handshake plus
+`get_agent_budget` / `dry_run_errand` / `settle_invoice`, then settles the
+returned cumulative voucher on-chain and checks `claimed()` and the fee split.
