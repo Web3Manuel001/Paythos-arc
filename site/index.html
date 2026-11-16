@@ -1,0 +1,789 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paythos — Spend control for autonomous capital</title>
+    <meta
+      name="description"
+      content="Paythos is the non-custodial USDC spend layer for AI agents on Arc L1. Daily ceilings, per-transaction bounds, and human approval enforced in vault bytecode."
+    />
+    <meta name="theme-color" content="#131411" />
+    <meta property="og:title" content="Paythos — Spend control for autonomous capital" />
+    <meta
+      property="og:description"
+      content="Agents can move money. They should not be trusted with it. Policy-enforced USDC vaults on Arc L1."
+    />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <script>document.documentElement.classList.add("js");</script>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <div class="grain" aria-hidden="true"></div>
+
+    <div class="utility-bar">
+      <div class="shell utility-inner">
+        <span><i class="status-dot" aria-hidden="true"></i> Arc Testnet live</span>
+        <span class="utility-rule" aria-hidden="true"></span>
+        <span>Vault source verified</span>
+        <a
+          class="utility-link"
+          href="https://explorer.testnet.arc.io/address/0xD69eA0ab9671549095D473E5176579ee879373Ce#code"
+          target="_blank"
+          rel="noreferrer"
+          >Inspect deployment <span aria-hidden="true">↗</span></a
+        >
+      </div>
+    </div>
+
+    <header class="site-header" data-header>
+      <div class="shell header-inner">
+        <a class="wordmark" href="#top" aria-label="Paythos home">
+          <img
+            class="wordmark-logo"
+            src="assets/logo/paythos-wordmark.png"
+            width="1163"
+            height="277"
+            alt="Paythos"
+            fetchpriority="high"
+            decoding="async"
+          />
+          <span class="wordmark-meta">Protocol</span>
+        </a>
+
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" data-menu-toggle>
+          <span class="menu-toggle-label">Menu</span>
+          <span class="menu-toggle-lines" aria-hidden="true"><i></i><i></i></span>
+        </button>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary">
+          <a href="#gap" data-nav>Gap</a>
+          <a href="#protocol" data-nav>Protocol</a>
+          <a href="#invariants" data-nav>Invariants</a>
+          <a href="#proof" data-nav>Proof</a>
+          <a href="#gate" data-nav>Gate 5</a>
+          <a class="nav-cta" href="https://github.com/Web3Manuel001/Paythos-arc" target="_blank" rel="noreferrer"
+            >GitHub <span aria-hidden="true">↗</span></a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero shell" id="top">
+        <div class="hero-copy">
+          <div class="eyebrow reveal">
+            <span class="eyebrow-index">00</span>
+            <span>Spend control for autonomous capital</span>
+          </div>
+
+          <h1 class="hero-title reveal">
+            Autonomy<br />
+            needs a <em>ceiling.</em>
+          </h1>
+
+          <p class="hero-lede reveal">
+            Paythos is the non-custodial guardrail between an AI agent and its USDC.
+            Daily limits, per-transaction caps, and human review are enforced in vault
+            bytecode on Arc L1 — not in a system prompt.
+          </p>
+
+          <div class="hero-actions reveal">
+            <a class="button button-primary" href="#protocol"
+              >Inspect the protocol <span aria-hidden="true">↓</span></a
+            >
+            <a
+              class="button button-quiet"
+              href="https://explorer.testnet.arc.io/address/0xD69eA0ab9671549095D473E5176579ee879373Ce"
+              target="_blank"
+              rel="noreferrer"
+              >View live vault <span aria-hidden="true">↗</span></a
+            >
+          </div>
+
+          <dl class="hero-meta reveal">
+            <div><dt>Chain</dt><dd>Arc L1</dd></div>
+            <div><dt>Settlement</dt><dd>USDC</dd></div>
+            <div><dt>Custody</dt><dd>None</dd></div>
+            <div><dt>Policy</dt><dd>On-chain</dd></div>
+          </dl>
+        </div>
+
+        <aside class="console reveal" aria-label="Policy pre-flight simulator" id="policy-console">
+          <div class="console-top">
+            <span class="mono">GOFER / PRE-FLIGHT</span>
+            <span class="sim-label"><i aria-hidden="true"></i> simulation</span>
+          </div>
+
+          <div class="console-identity">
+            <div>
+              <span class="console-label">Agent</span>
+              <strong>research-agent</strong>
+              <code>0x71c4…9f02</code>
+            </div>
+            <div>
+              <span class="console-label">Vault</span>
+              <strong>v3 / Arc Testnet</strong>
+              <code>0xD69e…73Ce</code>
+            </div>
+          </div>
+
+          <div class="console-control">
+            <div class="control-head">
+              <label for="amount">Payment delta</label>
+              <output for="amount" id="amount-out">$0.42</output>
+            </div>
+            <input id="amount" type="range" min="0.05" max="40" step="0.05" value="0.42" />
+            <div class="presets" role="group" aria-label="Preset payment amounts">
+              <button type="button" data-amount="0.42" class="is-active">$0.42</button>
+              <button type="button" data-amount="4.00">$4.00</button>
+              <button type="button" data-amount="18.00">$18.00</button>
+              <button type="button" data-amount="40.00">$40.00</button>
+            </div>
+          </div>
+
+          <div class="console-field">
+            <label for="merchant">Merchant</label>
+            <select id="merchant">
+              <option value="allow">Northstar Data · allowlisted</option>
+              <option value="unknown">unlisted endpoint · 0xdead…beef</option>
+            </select>
+          </div>
+
+          <div class="console-field console-field-split">
+            <span id="epoch-label">Delegation epoch</span>
+            <div class="segmented" role="group" aria-labelledby="epoch-label">
+              <button type="button" data-epoch="active" class="is-active">active · 2</button>
+              <button type="button" data-epoch="stale">stale · 1</button>
+            </div>
+          </div>
+
+          <div class="decision" aria-live="polite" data-decision>
+            <div class="decision-main">
+              <span class="console-label">Policy</span>
+              <strong id="policy-word">ALLOW</strong>
+            </div>
+            <p id="policy-detail">Within the Tier 1 auto-exec band.</p>
+          </div>
+
+          <div class="vault-line">
+            <span class="console-label">Vault</span>
+            <code id="vault-status" aria-live="polite">claimVoucher() → OK</code>
+          </div>
+
+          <div class="console-balance">
+            <span>rolling 24h remaining</span>
+            <strong>$18.80</strong>
+          </div>
+
+          <ul class="checks" id="checks" aria-label="Guard trace">
+            <li data-check="allowlist"><span>Destination allowlist</span><b>pass</b></li>
+            <li data-check="counterparty"><span>Counterparty floor</span><b>pass</b></li>
+            <li data-check="maxtx"><span>delta ≤ maxPerTx</span><b>pass</b></li>
+            <li data-check="daily"><span>rolling 24h ceiling</span><b>pass</b></li>
+            <li data-check="epoch"><span>active delegation epoch</span><b>pass</b></li>
+          </ul>
+
+          <div class="console-foot">
+            Model of <code>GoferPolicyEngine</code> and <code>PaythosVault.claimVoucher()</code>.
+            No funds move.
+          </div>
+        </aside>
+      </section>
+
+      <div class="signal-strip" aria-hidden="true">
+        <div class="signal-track">
+          <span>Non-custodial</span><i></i>
+          <span>USDC on Arc L1</span><i></i>
+          <span>Cumulative EIP-712 vouchers</span><i></i>
+          <span>Circle CCTP funding</span><i></i>
+          <span>x402 v2</span><i></i>
+          <span>MCP native</span><i></i>
+          <span>Fail closed by default</span><i></i>
+          <span>Non-custodial</span><i></i>
+          <span>USDC on Arc L1</span><i></i>
+          <span>Cumulative EIP-712 vouchers</span><i></i>
+          <span>Circle CCTP funding</span><i></i>
+          <span>x402 v2</span><i></i>
+          <span>MCP native</span><i></i>
+          <span>Fail closed by default</span><i></i>
+        </div>
+      </div>
+
+      <section class="section shell" id="gap">
+        <div class="section-head reveal">
+          <div class="section-label"><span>01</span> The gap</div>
+          <p class="section-note">Wallets were built for humans. Agents inherited the keys.</p>
+        </div>
+
+        <div class="split-head">
+          <h2 class="display reveal">A wallet knows balance.<br />It does not know intent.</h2>
+          <div class="intro-copy reveal">
+            <p>
+              Give an agent a key and you have given it the ability to spend. The model
+              decides what is reasonable; the wallet has no opinion. That gap is where
+              recursive loops, wrong payees, and stale delegations become losses.
+            </p>
+            <p class="aside-line">The fix is not a better prompt. It is a smaller blast radius.</p>
+          </div>
+        </div>
+
+        <div class="risk-grid">
+          <article class="risk-card reveal">
+            <span class="risk-index">A / 01</span>
+            <h3>Runaway loop</h3>
+            <p>The agent retries until the balance is gone. Spend scales with model error.</p>
+            <div class="risk-guard">
+              <span>Contained by</span>
+              <code>INV-M6 → INV-2 → INV-3</code>
+            </div>
+          </article>
+          <article class="risk-card reveal">
+            <span class="risk-index">A / 02</span>
+            <h3>Wrong payee</h3>
+            <p>A hijacked prompt routes USDC to an address nobody approved.</p>
+            <div class="risk-guard">
+              <span>Contained by</span>
+              <code>allowlist + payee binding</code>
+            </div>
+          </article>
+          <article class="risk-card reveal">
+            <span class="risk-index">A / 03</span>
+            <h3>Stale delegation</h3>
+            <p>After re-authorization, old signatures still look cryptographically valid.</p>
+            <div class="risk-guard">
+              <span>Contained by</span>
+              <code>INV-6 / epoch bump</code>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section section-ink" id="protocol">
+        <div class="shell">
+          <div class="section-head reveal">
+            <div class="section-label"><span>02</span> Control plane</div>
+            <p class="section-note">Deterministic checks. No model in the trust path.</p>
+          </div>
+
+          <div class="split-head">
+            <h2 class="display reveal">The agent proposes.<br />The vault disposes.</h2>
+            <div class="intro-copy reveal">
+              <p>
+                Three checks stand between intent and settlement. Each one is
+                deterministic; none depend on the model behaving.
+              </p>
+            </div>
+          </div>
+
+          <div class="flow">
+            <article class="flow-step reveal">
+              <div class="flow-top"><span>01</span><code>dryRun()</code></div>
+              <h3>Simulate</h3>
+              <p>
+                Resolve allowlist, counterparty score, tier band, and rolling allowance
+                before a signature exists. Ambiguity halts.
+              </p>
+              <span class="flow-tag">no capital moves</span>
+            </article>
+            <article class="flow-step reveal">
+              <div class="flow-top"><span>02</span><code>signVoucher()</code></div>
+              <h3>Sign</h3>
+              <p>
+                A cumulative EIP-712 voucher binds agent, merchant, token, amount, expiry,
+                and epoch. The prompt leaves only as a hash.
+              </p>
+              <span class="flow-tag">replay-resistant</span>
+            </article>
+            <article class="flow-step reveal">
+              <div class="flow-top"><span>03</span><code>claimVoucher()</code></div>
+              <h3>Settle</h3>
+              <p>
+                The vault re-checks the delta on-chain: monotonic, bounded, inside the
+                rolling 24h ceiling, under the active epoch.
+              </p>
+              <span class="flow-tag">fee at source</span>
+            </article>
+          </div>
+
+          <div class="protocol-grid">
+            <div class="code-panel reveal" aria-label="Voucher type definition">
+              <div class="code-head">
+                <span>VoucherTypes.sol</span>
+                <span class="code-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              </div>
+              <pre><code><span class="c-key">struct</span> Voucher {
+  <span class="c-type">address</span> agentKey;
+  <span class="c-type">address</span> merchant;
+  <span class="c-type">address</span> token;
+  <span class="c-type">uint256</span> cumulativeAmount; <span class="c-muted">// never per-call</span>
+  <span class="c-type">uint256</span> validUntil;
+  <span class="c-type">uint64</span>  epoch;            <span class="c-muted">// INV-6</span>
+  <span class="c-type">bytes32</span> memo;             <span class="c-muted">// intent hash</span>
+}</code></pre>
+              <div class="code-foot">
+                <span>PROTOCOL_VERSION = "3"</span>
+                <span>EIP-712</span>
+              </div>
+            </div>
+
+            <div class="protocol-notes">
+              <div class="protocol-note reveal">
+                <span class="note-index">01</span>
+                <div>
+                  <h3>Policy is bytecode, not copy</h3>
+                  <p>
+                    Deltas are settled against the vault's own state. The client cannot
+                    raise its own ceiling, skip a check, or talk the merchant into a
+                    larger claim.
+                  </p>
+                </div>
+              </div>
+              <div class="protocol-note reveal">
+                <span class="note-index">02</span>
+                <div>
+                  <h3>Intent stays local</h3>
+                  <p>
+                    <code>keccak256(prompt || timestamp)</code> travels in the voucher memo.
+                    The raw prompt never crosses the trust boundary.
+                  </p>
+                </div>
+              </div>
+              <div class="protocol-note reveal">
+                <span class="note-index">03</span>
+                <div>
+                  <h3>YOPO for streams</h3>
+                  <p>
+                    Metered streams hold only the ceiling. The client signs exact
+                    consumption at completion — and signs nothing when the stream fails.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section shell" id="invariants">
+        <div class="section-head reveal">
+          <div class="section-label"><span>03</span> Invariants</div>
+          <p class="section-note">Six properties the vault cannot be argued out of.</p>
+        </div>
+
+        <div class="split-head">
+          <h2 class="display reveal">Enforced,<br />not advised.</h2>
+          <div class="intro-copy reveal">
+            <p>
+              Every guard maps to a revert selector and a test. The table below is the
+              public contract between the agent and the capital.
+            </p>
+            <a class="text-link" href="https://github.com/Web3Manuel001/Paythos-arc/blob/main/SECURITY.md" target="_blank" rel="noreferrer"
+              >Read the full security model <span aria-hidden="true">↗</span></a
+            >
+          </div>
+        </div>
+
+        <div class="invariant-wrap reveal">
+          <table class="invariant-table">
+            <thead>
+              <tr>
+                <th scope="col">ID</th>
+                <th scope="col">Invariant</th>
+                <th scope="col">Enforcement</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="inv-id">INV-1</span></td>
+                <td data-label="Rule">Monotonic cumulative claim per (agent, merchant, epoch).</td>
+                <td data-label="Enforcement"><code>InvalidVoucherAmount()</code></td>
+              </tr>
+              <tr>
+                <td><span class="inv-id">INV-2</span></td>
+                <td data-label="Rule">Rolling 24h ceiling across 25 hourly slots. No oracle, no cron.</td>
+                <td data-label="Enforcement"><code>DailyLimitExceeded()</code></td>
+              </tr>
+              <tr>
+                <td><span class="inv-id">INV-3</span></td>
+                <td data-label="Rule">Per-transaction delta never exceeds <code>maxPerTx</code>.</td>
+                <td data-label="Enforcement"><code>MaxPerTxExceeded()</code></td>
+              </tr>
+              <tr>
+                <td><span class="inv-id">INV-4</span></td>
+                <td data-label="Rule">Voucher and policy TTL are bounded by block time.</td>
+                <td data-label="Enforcement"><code>SessionExpired()</code></td>
+              </tr>
+              <tr>
+                <td><span class="inv-id">INV-5</span></td>
+                <td data-label="Rule">Only the owner exits capital; no pooled liquidity, yield, or delegatecall.</td>
+                <td data-label="Enforcement"><code>emergencyWithdraw</code> / owner-only</td>
+              </tr>
+              <tr>
+                <td><span class="inv-id">INV-6</span></td>
+                <td data-label="Rule">Vouchers bind to the active delegation epoch. Re-authorization orphans stale signatures.</td>
+                <td data-label="Enforcement"><code>SessionEpochMismatch()</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="stat-row">
+          <div class="stat reveal"><strong>36</strong><span>Foundry cases</span></div>
+          <div class="stat reveal"><strong>10,000</strong><span>invariant runs in CI</span></div>
+          <div class="stat reveal"><strong>277</strong><span>SDK tests across TS + Python</span></div>
+          <div class="stat reveal"><strong>0</strong><span>custody paths</span></div>
+        </div>
+      </section>
+
+      <section class="section" id="rails">
+        <div class="shell">
+          <div class="section-head reveal">
+            <div class="section-label"><span>04</span> Settlement</div>
+            <p class="section-note">One control plane. Two rails. Never a competing bridge.</p>
+          </div>
+
+          <div class="split-head">
+            <h2 class="display reveal">We don't move the rail.<br />We decide who may use it.</h2>
+            <div class="intro-copy reveal">
+              <p>
+                Paythos merchants settle through the vault. Circle marketplace services
+                settle through Circle. The same GOFER gate runs before either signature.
+              </p>
+            </div>
+          </div>
+
+          <div class="rail-grid">
+            <article class="rail-card reveal">
+              <div class="rail-head">
+                <span class="rail-kicker">Rail 01</span>
+                <span class="rail-badge">vault-settled</span>
+              </div>
+              <h3>Paythos merchant</h3>
+              <p>
+                x402 challenge → policy gate → cumulative voucher → <code>claimVoucher()</code>.
+                Deltas, expiry, allowlist, and epoch are re-checked on-chain.
+              </p>
+              <div class="rail-path">
+                <span>Client</span><i></i><span>Middleware</span><i></i><span>Vault</span>
+              </div>
+              <ul>
+                <li>Non-custodial reserve</li>
+                <li>Fee deducted at source</li>
+                <li>Monotonic batch settlement</li>
+              </ul>
+            </article>
+
+            <article class="rail-card rail-card-alt reveal">
+              <div class="rail-head">
+                <span class="rail-kicker">Rail 02</span>
+                <span class="rail-badge">circle-native</span>
+              </div>
+              <h3>Agent Marketplace</h3>
+              <p>
+                Standard x402 v2 → <code>GatewayWalletBatched</code> or exact EIP-3009 →
+                Circle settlement. Paythos selects only Arc USDC and gates every
+                authorization before it exists.
+              </p>
+              <div class="rail-path">
+                <span>Client</span><i></i><span>GOFER</span><i></i><span>Circle</span>
+              </div>
+              <ul>
+                <li>Same allowlist and tier gate</li>
+                <li>Direct spend tracked client-side</li>
+                <li>No vault custody for the rail</li>
+              </ul>
+            </article>
+          </div>
+
+          <p class="rail-note reveal">
+            Cross-chain funding uses Circle CCTP only. Paythos does not build, operate, or
+            hide a bridge.
+          </p>
+        </div>
+      </section>
+
+      <section class="section section-proof" id="proof">
+        <div class="shell">
+          <div class="section-head reveal">
+            <div class="section-label"><span>05</span> Evidence</div>
+            <p class="section-note">Arc Testnet. Real transactions. No mock ledger.</p>
+          </div>
+
+          <div class="proof-head">
+            <h2 class="display reveal">Shipped to testnet.<br />Not a deck.</h2>
+            <div class="proof-lede reveal">
+              <p>
+                The current v3 vault is source-verified on Blockscout. Claims below are
+                linked to the Arc explorer; amounts, fees, and epoch behavior are asserted
+                in the harnesses that produced them.
+              </p>
+              <span class="proof-stamp">PROTOCOL v3 · 2026-11-09</span>
+            </div>
+          </div>
+
+          <div class="deployment-card reveal">
+            <div class="deployment-head">
+              <span class="mono">LIVE DEPLOYMENT / ARC TESTNET</span>
+              <span class="verified-badge"><i aria-hidden="true"></i> source verified</span>
+            </div>
+            <div class="deployment-body">
+              <div>
+                <span class="console-label">PaythosVault</span>
+                <button class="address-copy" type="button" data-copy="0xD69eA0ab9671549095D473E5176579ee879373Ce">
+                  0xD69eA0ab9671549095D473E5176579ee879373Ce <span>copy</span>
+                </button>
+              </div>
+              <div>
+                <span class="console-label">Settlement token</span>
+                <code>native USDC · 0x3600…0000</code>
+              </div>
+              <div>
+                <span class="console-label">Fee</span>
+                <code>150 bps · deducted at source</code>
+              </div>
+              <div>
+                <span class="console-label">Owner</span>
+                <code>0x7D6d…Fb2C</code>
+              </div>
+            </div>
+            <div class="deployment-links">
+              <a href="https://explorer.testnet.arc.io/address/0xD69eA0ab9671549095D473E5176579ee879373Ce#code" target="_blank" rel="noreferrer"
+                >Verified source <span aria-hidden="true">↗</span></a
+              >
+              <a href="https://explorer.testnet.arc.io/tx/0x69e20da8b578feda290294edf9cf198a07b6cd8a97f9fb95a0d2d6913e3a7895" target="_blank" rel="noreferrer"
+                >Deploy transaction <span aria-hidden="true">↗</span></a
+              >
+            </div>
+          </div>
+
+          <div class="tx-grid">
+            <a class="tx-card reveal" href="https://explorer.testnet.arc.io/tx/0xa874d4f291be7a1eb2210e9c7ebda4f765e2f3bab8998095af7d17e597876c69" target="_blank" rel="noreferrer">
+              <span class="tx-type">Epoch-synced claim</span>
+              <strong>0.04 + 0.06 USDC</strong>
+              <span class="tx-meta">block 71,523,116 · fee 150 bps · replay rejected</span>
+              <code>0xa874d4f2…876c69</code>
+            </a>
+            <a class="tx-card reveal" href="https://explorer.testnet.arc.io/tx/0x99a1c655b06c92b7ee5f0d680542039ad0b56e608b442e1e867366a9e536d668" target="_blank" rel="noreferrer">
+              <span class="tx-type">MCP + SDK settlement</span>
+              <strong>Merchant net 0.0985 USDC</strong>
+              <span class="tx-meta">block 72,233,956 · distinct payee · balance delta asserted</span>
+              <code>0x99a1c655…e536d668</code>
+            </a>
+            <a class="tx-card reveal" href="https://explorer.testnet.arc.io/tx/0x6d18c95112761079d7d41958e3163807a52e4e6c1c517ab4297c7dde529342eb" target="_blank" rel="noreferrer">
+              <span class="tx-type">Circle wallet signature</span>
+              <strong>Same vouchers, external signer</strong>
+              <span class="tx-meta">block 72,238,450 · Circle wallet held 0 USDC</span>
+              <code>0x6d18c951…9342eb</code>
+            </a>
+            <div class="tx-card tx-card-static reveal">
+              <span class="tx-type">Marketplace probe</span>
+              <strong>GatewayWalletBatched</strong>
+              <span class="tx-meta">live 402 decoded · Arc USDC selected · no settlement sent</span>
+              <code>api.botpay.network/go</code>
+            </div>
+          </div>
+
+          <div class="proof-foot reveal">
+            <span>Every claim above is reproducible from the repository.</span>
+            <a href="https://github.com/Web3Manuel001/Paythos-arc" target="_blank" rel="noreferrer"
+              >Review the harnesses <span aria-hidden="true">↗</span></a
+            >
+          </div>
+        </div>
+      </section>
+
+      <section class="section shell" id="interfaces">
+        <div class="section-head reveal">
+          <div class="section-label"><span>06</span> Interfaces</div>
+          <p class="section-note">Bring the agent you already run.</p>
+        </div>
+
+        <div class="split-head">
+          <h2 class="display reveal">A guardrail,<br />not a migration.</h2>
+          <div class="intro-copy reveal">
+            <p>
+              Paythos ships as an SDK, a merchant middleware, and an MCP server. Existing
+              agent stacks keep their tools; the spend path gains a policy boundary.
+            </p>
+          </div>
+        </div>
+
+        <div class="interface-grid">
+          <article class="interface-card reveal">
+            <div class="interface-logo">
+              <img src="assets/Typescript_logo_2020.svg.webp" width="48" height="48" alt="" decoding="async" />
+            </div>
+            <h3>TypeScript SDK</h3>
+            <p>Strict ESM client, cumulative voucher signer, x402 v2 negotiation, YOPO streams.</p>
+            <code>@paythos/sdk</code>
+          </article>
+          <article class="interface-card reveal">
+            <div class="interface-logo">
+              <img src="assets/python.svg" width="48" height="48" alt="" decoding="async" />
+            </div>
+            <h3>Python SDK</h3>
+            <p>Pydantic mirrors, FastAPI middleware, async flush daemon, parity tests.</p>
+            <code>paythos</code>
+          </article>
+          <article class="interface-card reveal">
+            <div class="interface-logo">
+              <img src="assets/mcp-logo.png" width="48" height="48" alt="" decoding="async" />
+            </div>
+            <h3>MCP server</h3>
+            <p>stdio daemon with four tools. Environment-only config; no config code touched.</p>
+            <code>paythos-mcp</code>
+          </article>
+          <article class="interface-card reveal">
+            <div class="interface-logo">
+              <img src="assets/langchain-logo.png" width="48" height="48" alt="" decoding="async" />
+            </div>
+            <h3>LangChain</h3>
+            <p>DynamicStructuredTool wrappers for budget, dry-run, and purchase.</p>
+            <code>makeLangChainTools()</code>
+          </article>
+          <article class="interface-card reveal">
+            <div class="interface-logo">
+              <img src="assets/Eliza%20os.jpg" width="48" height="48" alt="" decoding="async" />
+            </div>
+            <h3>ElizaOS</h3>
+            <p>Action validate/handler pair plus plugin export.</p>
+            <code>paythosPlugin</code>
+          </article>
+          <article class="interface-card reveal">
+            <div class="interface-logo interface-logo--wide">
+              <img src="assets/autogen-logo.png" width="86" height="48" alt="" decoding="async" />
+            </div>
+            <h3>AutoGen · CrewAI</h3>
+            <p>OpenAI function specs and dispatch on TS; CrewAI tools on Python.</p>
+            <code>functionSpecs()</code>
+          </article>
+        </div>
+      </section>
+
+      <section class="section section-gate" id="gate">
+        <div class="shell">
+          <div class="section-head reveal">
+            <div class="section-label"><span>07</span> Gate 5</div>
+            <p class="section-note">The remaining work is integration, not invention.</p>
+          </div>
+
+          <div class="gate-grid">
+            <div>
+              <h2 class="display reveal">From testnet<br />to a funded pilot.</h2>
+              <p class="gate-lede reveal">
+                A milestone-based grant extends the deployed core into cross-chain funding,
+                a design-partner pilot, and a public SDK release on Arc.
+              </p>
+            </div>
+
+            <ol class="gate-list">
+              <li class="reveal">
+                <span class="gate-status done">done</span>
+                <div><strong>Arc Testnet core</strong><span>Vault, source verification, funded settlements, Circle signer.</span></div>
+              </li>
+              <li class="reveal">
+                <span class="gate-status next">next</span>
+                <div><strong>CCTP funding path</strong><span>Burn on source chain → Circle attestation → mint on Arc → deposit.</span></div>
+              </li>
+              <li class="reveal">
+                <span class="gate-status next">next</span>
+                <div><strong>Agent Wallet approval adapter</strong><span>Circle Agent Wallets approval and audit surface.</span></div>
+              </li>
+              <li class="reveal">
+                <span class="gate-status next">next</span>
+                <div><strong>Design-partner pilot</strong><span>Two to three merchants with real services and spend policies.</span></div>
+              </li>
+              <li class="reveal">
+                <span class="gate-status blocked">blocked</span>
+                <div><strong>Arc Mainnet readiness</strong><span>USDC address confirmation, deployment, verification.</span></div>
+              </li>
+              <li class="reveal">
+                <span class="gate-status next">next</span>
+                <div><strong>Public SDK release</strong><span>Versioned TypeScript and Python packages with docs.</span></div>
+              </li>
+            </ol>
+          </div>
+        </div>
+      </section>
+
+      <section class="section cta-section" id="contact">
+        <div class="shell cta-inner">
+          <div class="cta-copy reveal">
+            <div class="eyebrow">
+              <span class="eyebrow-index">08</span>
+              <span>Technical review</span>
+            </div>
+            <h2 class="display">Put a ceiling<br />on agent spend.</h2>
+            <p>
+              Review the vault, run the invariant suite, or bring a design-partner workload
+              to the Gate 5 pilot.
+            </p>
+          </div>
+          <div class="cta-actions reveal">
+            <a class="button button-primary" href="https://github.com/Web3Manuel001/Paythos-arc" target="_blank" rel="noreferrer"
+              >Review the repository <span aria-hidden="true">↗</span></a
+            >
+            <a class="button button-quiet" href="https://github.com/Web3Manuel001/Paythos-arc/blob/main/SECURITY.md" target="_blank" rel="noreferrer"
+              >Read the invariants <span aria-hidden="true">↗</span></a
+            >
+            <span class="cta-note">Grant dossier and architecture brief available on request.</span>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-top">
+        <a class="wordmark footer-wordmark" href="#top" aria-label="Paythos home">
+          <img
+            class="wordmark-logo"
+            src="assets/logo/paythos-wordmark.png"
+            width="1163"
+            height="277"
+            alt="Paythos"
+            loading="lazy"
+            decoding="async"
+          />
+          <span class="wordmark-meta">Protocol</span>
+        </a>
+        <p class="footer-line">Non-custodial spend control for autonomous capital.</p>
+      </div>
+
+      <div class="shell footer-grid">
+        <div>
+          <span class="footer-label">Protocol</span>
+          <a href="#protocol">Control plane</a>
+          <a href="#invariants">Invariants</a>
+          <a href="#rails">Settlement rails</a>
+        </div>
+        <div>
+          <span class="footer-label">Evidence</span>
+          <a href="#proof">Live deployment</a>
+          <a href="https://github.com/Web3Manuel001/Paythos-arc" target="_blank" rel="noreferrer">Source</a>
+          <a href="https://github.com/Web3Manuel001/Paythos-arc/blob/main/SECURITY.md" target="_blank" rel="noreferrer">Security model</a>
+        </div>
+        <div>
+          <span class="footer-label">Network</span>
+          <span>Arc Testnet · 5042002</span>
+          <span>USDC · native precompile</span>
+          <span>Fail closed</span>
+        </div>
+        <div>
+          <span class="footer-label">Status</span>
+          <span class="footer-status"><i aria-hidden="true"></i> Testnet · pre-audit</span>
+          <span>Gates 1–4 complete</span>
+          <span>Gate 5 in progress</span>
+        </div>
+      </div>
+
+      <div class="shell footer-bottom">
+        <span>© <span data-year>2026</span> Paythos Protocol</span>
+        <span>No custody. No bridge. No pooled liquidity.</span>
+        <span>Static site. No trackers.</span>
+      </div>
+    </footer>
+  </body>
+</html>

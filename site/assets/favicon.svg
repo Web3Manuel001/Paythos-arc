@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Paythos">
+  <rect width="64" height="64" fill="#131411"/>
+  <path d="M19 49V15h14.5C42.4 15 49 21.6 49 30.2S42.4 45.4 33.5 45.4H27" fill="none" stroke="#f2eee4" stroke-width="4"/>
+  <path d="M19 32h8" fill="none" stroke="#f24b26" stroke-width="4"/>
+  <rect x="45" y="45" width="7" height="7" fill="#c8ef67"/>
+</svg>
