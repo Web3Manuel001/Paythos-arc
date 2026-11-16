@@ -6,7 +6,7 @@
     <title>Paythos — Spend control for autonomous capital</title>
     <meta
       name="description"
-      content="Paythos is the non-custodial USDC spend layer for AI agents on Arc L1. Daily ceilings, per-transaction bounds, and human approval enforced in vault bytecode."
+      content="Paythos is the non-custodial USDC spend layer for AI agents on Arc L1. Daily ceilings, per-transaction bounds, and session expiry are enforced in vault bytecode; human approval tiers live in the SDK policy engine."
     />
     <meta name="theme-color" content="#131411" />
     <meta property="og:title" content="Paythos — Spend control for autonomous capital" />
@@ -91,8 +91,9 @@
 
           <p class="hero-lede reveal">
             Paythos is the non-custodial guardrail between an AI agent and its USDC.
-            Daily limits, per-transaction caps, and human review are enforced in vault
-            bytecode on Arc L1 — not in a system prompt.
+            Daily limits, per-transaction caps, and session expiry are enforced in vault
+            bytecode on Arc L1. Human review lives in the SDK policy engine — not a
+            system prompt.
           </p>
 
           <div class="hero-actions reveal">
@@ -111,7 +112,7 @@
           <dl class="hero-meta reveal">
             <div><dt>Chain</dt><dd>Arc L1</dd></div>
             <div><dt>Settlement</dt><dd>USDC</dd></div>
-            <div><dt>Custody</dt><dd>None</dd></div>
+            <div><dt>Custody</dt><dd>Owner-only</dd></div>
             <div><dt>Policy</dt><dd>On-chain</dd></div>
           </dl>
         </div>
@@ -435,10 +436,10 @@
         </div>
 
         <div class="stat-row">
-          <div class="stat reveal"><strong>36</strong><span>Foundry cases</span></div>
+          <div class="stat reveal"><strong>38</strong><span>Foundry tests</span></div>
           <div class="stat reveal"><strong>10,000</strong><span>invariant runs in CI</span></div>
-          <div class="stat reveal"><strong>277</strong><span>SDK tests across TS + Python</span></div>
-          <div class="stat reveal"><strong>0</strong><span>custody paths</span></div>
+          <div class="stat reveal"><strong>257</strong><span>SDK tests across TS + Python</span></div>
+          <div class="stat reveal"><strong>1</strong><span>owner-only exit path</span></div>
         </div>
       </section>
 
@@ -454,7 +455,8 @@
             <div class="intro-copy reveal">
               <p>
                 Paythos merchants settle through the vault. Circle marketplace services
-                settle through Circle. The same GOFER gate runs before either signature.
+                settle through Circle. The same GOFER gate runs before either signature;
+                the marketplace batching path is still a probe, not a shipped rail.
               </p>
             </div>
           </div>
@@ -474,7 +476,7 @@
                 <span>Client</span><i></i><span>Middleware</span><i></i><span>Vault</span>
               </div>
               <ul>
-                <li>Non-custodial reserve</li>
+                <li>Owner-controlled reserve</li>
                 <li>Fee deducted at source</li>
                 <li>Monotonic batch settlement</li>
               </ul>
@@ -483,20 +485,20 @@
             <article class="rail-card rail-card-alt reveal">
               <div class="rail-head">
                 <span class="rail-kicker">Rail 02</span>
-                <span class="rail-badge">circle-native</span>
+                <span class="rail-badge">probe</span>
               </div>
               <h3>Agent Marketplace</h3>
               <p>
-                Standard x402 v2 → <code>GatewayWalletBatched</code> or exact EIP-3009 →
-                Circle settlement. Paythos selects only Arc USDC and gates every
-                authorization before it exists.
+                Standard x402 v2 buyer negotiation is wired. A live probe selected Arc
+                USDC and produced a <code>GatewayWalletBatched</code> authorization
+                without sending payment; Gateway batching remains planned.
               </p>
               <div class="rail-path">
                 <span>Client</span><i></i><span>GOFER</span><i></i><span>Circle</span>
               </div>
               <ul>
-                <li>Same allowlist and tier gate</li>
-                <li>Direct spend tracked client-side</li>
+                <li>Discovery + x402 negotiation wired</li>
+                <li>No marketplace settlement sent yet</li>
                 <li>No vault custody for the rail</li>
               </ul>
             </article>
@@ -577,9 +579,9 @@
               <code>0x99a1c655…e536d668</code>
             </a>
             <a class="tx-card reveal" href="https://explorer.testnet.arc.io/tx/0x6d18c95112761079d7d41958e3163807a52e4e6c1c517ab4297c7dde529342eb" target="_blank" rel="noreferrer">
-              <span class="tx-type">Circle wallet signature</span>
+              <span class="tx-type">Circle wallet signature (manual)</span>
               <strong>Same vouchers, external signer</strong>
-              <span class="tx-meta">block 72,238,450 · Circle wallet held 0 USDC</span>
+              <span class="tx-meta">block 72,238,450 · manual stress test · Circle wallet held 0 USDC</span>
               <code>0x6d18c951…9342eb</code>
             </a>
             <div class="tx-card tx-card-static reveal">
@@ -591,7 +593,7 @@
           </div>
 
           <div class="proof-foot reveal">
-            <span>Every claim above is reproducible from the repository.</span>
+            <span>MCP/SDK settlement and the marketplace probe are reproducible from the repository; the Circle-wallet settlement is a manual stress test.</span>
             <a href="https://github.com/Web3Manuel001/Paythos-arc" target="_blank" rel="noreferrer"
               >Review the harnesses <span aria-hidden="true">↗</span></a
             >
@@ -618,7 +620,7 @@
         <div class="interface-grid">
           <article class="interface-card reveal">
             <div class="interface-logo">
-              <img src="assets/Typescript_logo_2020.svg.webp" width="48" height="48" alt="" decoding="async" />
+              <img src="assets/Typescript_logo_2020.svg.webp" width="48" height="48" alt="TypeScript logo" decoding="async" />
             </div>
             <h3>TypeScript SDK</h3>
             <p>Strict ESM client, cumulative voucher signer, x402 v2 negotiation, YOPO streams.</p>
@@ -626,7 +628,7 @@
           </article>
           <article class="interface-card reveal">
             <div class="interface-logo">
-              <img src="assets/python.svg" width="48" height="48" alt="" decoding="async" />
+              <img src="assets/python.svg" width="48" height="48" alt="Python logo" decoding="async" />
             </div>
             <h3>Python SDK</h3>
             <p>Pydantic mirrors, FastAPI middleware, async flush daemon, parity tests.</p>
@@ -634,7 +636,7 @@
           </article>
           <article class="interface-card reveal">
             <div class="interface-logo">
-              <img src="assets/mcp-logo.png" width="48" height="48" alt="" decoding="async" />
+              <img src="assets/mcp-logo.png" width="48" height="48" alt="Model Context Protocol logo" decoding="async" />
             </div>
             <h3>MCP server</h3>
             <p>stdio daemon with four tools. Environment-only config; no config code touched.</p>
@@ -642,7 +644,7 @@
           </article>
           <article class="interface-card reveal">
             <div class="interface-logo">
-              <img src="assets/langchain-logo.png" width="48" height="48" alt="" decoding="async" />
+              <img src="assets/langchain-logo.png" width="48" height="48" alt="LangChain logo" decoding="async" />
             </div>
             <h3>LangChain</h3>
             <p>DynamicStructuredTool wrappers for budget, dry-run, and purchase.</p>
@@ -650,7 +652,7 @@
           </article>
           <article class="interface-card reveal">
             <div class="interface-logo">
-              <img src="assets/Eliza%20os.jpg" width="48" height="48" alt="" decoding="async" />
+              <img src="assets/eliza-os.jpg" width="48" height="48" alt="ElizaOS logo" decoding="async" />
             </div>
             <h3>ElizaOS</h3>
             <p>Action validate/handler pair plus plugin export.</p>
@@ -658,7 +660,7 @@
           </article>
           <article class="interface-card reveal">
             <div class="interface-logo interface-logo--wide">
-              <img src="assets/autogen-logo.png" width="86" height="48" alt="" decoding="async" />
+              <img src="assets/autogen-logo.png" width="86" height="48" alt="AutoGen logo" decoding="async" />
             </div>
             <h3>AutoGen · CrewAI</h3>
             <p>OpenAI function specs and dispatch on TS; CrewAI tools on Python.</p>
@@ -734,6 +736,11 @@
               >Read the invariants <span aria-hidden="true">↗</span></a
             >
             <span class="cta-note">Grant dossier and architecture brief available on request.</span>
+            <div class="contact-line">
+              <span>Web3Manuel</span>
+              <a href="https://x.com/web3manuel1" target="_blank" rel="noreferrer">@web3manuel1</a>
+              <a href="mailto:web3manuel@gmail.com">web3manuel@gmail.com</a>
+            </div>
           </div>
         </div>
       </section>
@@ -785,7 +792,8 @@
 
       <div class="shell footer-bottom">
         <span>© <span data-year>2026</span> Paythos Protocol</span>
-        <span>No custody. No bridge. No pooled liquidity.</span>
+        <span>Owner-only withdrawal. No bridge. No pooled liquidity.</span>
+        <span>Framework logos belong to their owners; no affiliation implied.</span>
         <span>Static site. No trackers.</span>
       </div>
     </footer>

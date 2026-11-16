@@ -1976,6 +1976,28 @@ a.tx-card:hover {
   text-transform: uppercase;
 }
 
+.contact-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 14px;
+  color: var(--muted-on-ink);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.contact-line a {
+  color: var(--paper);
+  border-bottom: 1px solid var(--line-dark-strong);
+  text-decoration: none;
+}
+
+.contact-line a:hover {
+  color: var(--lime);
+  border-color: var(--lime);
+}
+
 /* Footer */
 
 .site-footer {
