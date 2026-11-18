@@ -89,7 +89,7 @@ contract ClaimHappyPaths is VaultTestBase {
 
         // INV-2: window is rolling — a fresh 24h opens so the OLD tally never stacks:
         // with stacked windows $19.90 + $2.00 = $21.90 would revert DailyLimitExceeded.
-        // Hourly-bucket granularity (docs/SECURITY.md INV-2): the old hour bucket
+        // Hourly-bucket granularity: the old hour bucket
         // stays live for ≤1h past exactly-24h, so warp one hour past the boundary.
         vm.warp(block.timestamp + 1 days + 1 hours);
         cum += 2_000_000;
@@ -242,7 +242,7 @@ contract ClaimRevertPaths is VaultTestBase {
 
 /**
  * @title AdversarialWindowsSessions
- * @notice Reviewer PoCs locked as regressions (docs/SECURITY.md INV-2, INV-6).
+ * @notice Reviewer PoCs locked as regressions.
  *      Every test here used to FAIL against the pre-fix vault.
  */
 contract AdversarialWindowsSessions is VaultTestBase {

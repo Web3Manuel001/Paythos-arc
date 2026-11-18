@@ -3,13 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Paythos — Spend control for autonomous capital</title>
+    <title>Paythos: Spend control for autonomous capital</title>
     <meta
       name="description"
-      content="Paythos is the non-custodial USDC spend layer for AI agents on Arc L1. Daily ceilings, per-transaction bounds, and session expiry are enforced in vault bytecode; human approval tiers live in the SDK policy engine."
+      content="Paythos is the non-custodial USDC spend layer for AI agents on Arc L1. Daily ceilings, per-transaction caps and expiry enforced in vault bytecode, with human approval in the SDK."
     />
     <meta name="theme-color" content="#131411" />
-    <meta property="og:title" content="Paythos — Spend control for autonomous capital" />
+    <meta property="og:title" content="Paythos: Spend control for autonomous capital" />
     <meta
       property="og:description"
       content="Agents can move money. They should not be trusted with it. Policy-enforced USDC vaults on Arc L1."
@@ -68,7 +68,7 @@
           <a href="#protocol" data-nav>Protocol</a>
           <a href="#invariants" data-nav>Invariants</a>
           <a href="#proof" data-nav>Proof</a>
-          <a href="#gate" data-nav>Gate 5</a>
+          <a href="#gate" data-nav>Launch plan</a>
           <a class="nav-cta" href="https://github.com/Web3Manuel001/Paythos-arc" target="_blank" rel="noreferrer"
             >GitHub <span aria-hidden="true">↗</span></a
           >
@@ -91,9 +91,8 @@
 
           <p class="hero-lede reveal">
             Paythos is the non-custodial guardrail between an AI agent and its USDC.
-            Daily limits, per-transaction caps, and session expiry are enforced in vault
-            bytecode on Arc L1. Human review lives in the SDK policy engine — not a
-            system prompt.
+            Daily limits and per-transaction caps are enforced in vault
+            bytecode on Arc L1, not in a system prompt.
           </p>
 
           <div class="hero-actions reveal">
@@ -112,14 +111,14 @@
           <dl class="hero-meta reveal">
             <div><dt>Chain</dt><dd>Arc L1</dd></div>
             <div><dt>Settlement</dt><dd>USDC</dd></div>
-            <div><dt>Custody</dt><dd>Owner-only</dd></div>
+            <div><dt>Withdrawals</dt><dd>Owner only</dd></div>
             <div><dt>Policy</dt><dd>On-chain</dd></div>
           </dl>
         </div>
 
         <aside class="console reveal" aria-label="Policy pre-flight simulator" id="policy-console">
           <div class="console-top">
-            <span class="mono">GOFER / PRE-FLIGHT</span>
+            <span class="mono">POLICY / PRE-FLIGHT</span>
             <span class="sim-label"><i aria-hidden="true"></i> simulation</span>
           </div>
 
@@ -243,7 +242,7 @@
             <p>The agent retries until the balance is gone. Spend scales with model error.</p>
             <div class="risk-guard">
               <span>Contained by</span>
-              <code>INV-M6 → INV-2 → INV-3</code>
+              <code>throttle → daily limit → per-tx limit</code>
             </div>
           </article>
           <article class="risk-card reveal">
@@ -360,10 +359,10 @@
               <div class="protocol-note reveal">
                 <span class="note-index">03</span>
                 <div>
-                  <h3>YOPO for streams</h3>
+                  <h3>Pay only for delivered streams</h3>
                   <p>
                     Metered streams hold only the ceiling. The client signs exact
-                    consumption at completion — and signs nothing when the stream fails.
+                    consumption at completion and signs nothing when the stream fails.
                   </p>
                 </div>
               </div>
@@ -436,10 +435,10 @@
         </div>
 
         <div class="stat-row">
-          <div class="stat reveal"><strong>38</strong><span>Foundry tests</span></div>
+          <div class="stat reveal"><strong>38</strong><span>Foundry cases</span></div>
           <div class="stat reveal"><strong>10,000</strong><span>invariant runs in CI</span></div>
-          <div class="stat reveal"><strong>257</strong><span>SDK tests across TS + Python</span></div>
-          <div class="stat reveal"><strong>1</strong><span>owner-only exit path</span></div>
+          <div class="stat reveal"><strong>277</strong><span>SDK tests across TS + Python</span></div>
+          <div class="stat reveal"><strong>Owner</strong><span>is the only one who can withdraw</span></div>
         </div>
       </section>
 
@@ -455,7 +454,7 @@
             <div class="intro-copy reveal">
               <p>
                 Paythos merchants settle through the vault. Circle marketplace services
-                settle through Circle. The same GOFER gate runs before either signature;
+                settle through Circle. The same policy gate runs before either signature;
                 the marketplace batching path is still a probe, not a shipped rail.
               </p>
             </div>
@@ -485,7 +484,7 @@
             <article class="rail-card rail-card-alt reveal">
               <div class="rail-head">
                 <span class="rail-kicker">Rail 02</span>
-                <span class="rail-badge">probe</span>
+                <span class="rail-badge">planned</span>
               </div>
               <h3>Agent Marketplace</h3>
               <p>
@@ -494,7 +493,7 @@
                 without sending payment; Gateway batching remains planned.
               </p>
               <div class="rail-path">
-                <span>Client</span><i></i><span>GOFER</span><i></i><span>Circle</span>
+                <span>Client</span><i></i><span>Policy gate</span><i></i><span>Circle</span>
               </div>
               <ul>
                 <li>Discovery + x402 negotiation wired</li>
@@ -579,7 +578,7 @@
               <code>0x99a1c655…e536d668</code>
             </a>
             <a class="tx-card reveal" href="https://explorer.testnet.arc.io/tx/0x6d18c95112761079d7d41958e3163807a52e4e6c1c517ab4297c7dde529342eb" target="_blank" rel="noreferrer">
-              <span class="tx-type">Circle wallet signature (manual)</span>
+              <span class="tx-type">Circle wallet signature (manual test)</span>
               <strong>Same vouchers, external signer</strong>
               <span class="tx-meta">block 72,238,450 · manual stress test · Circle wallet held 0 USDC</span>
               <code>0x6d18c951…9342eb</code>
@@ -593,7 +592,7 @@
           </div>
 
           <div class="proof-foot reveal">
-            <span>MCP/SDK settlement and the marketplace probe are reproducible from the repository; the Circle-wallet settlement is a manual stress test.</span>
+            <span>The vault and MCP settlements above can be reproduced with the e2e scripts in this repository.</span>
             <a href="https://github.com/Web3Manuel001/Paythos-arc" target="_blank" rel="noreferrer"
               >Review the harnesses <span aria-hidden="true">↗</span></a
             >
@@ -623,7 +622,7 @@
               <img src="assets/Typescript_logo_2020.svg.webp" width="48" height="48" alt="TypeScript logo" decoding="async" />
             </div>
             <h3>TypeScript SDK</h3>
-            <p>Strict ESM client, cumulative voucher signer, x402 v2 negotiation, YOPO streams.</p>
+            <p>Strict ESM client, cumulative voucher signer, x402 v2 negotiation, metered streams.</p>
             <code>@paythos/sdk</code>
           </article>
           <article class="interface-card reveal">
@@ -672,7 +671,7 @@
       <section class="section section-gate" id="gate">
         <div class="shell">
           <div class="section-head reveal">
-            <div class="section-label"><span>07</span> Gate 5</div>
+            <div class="section-label"><span>07</span> Launch plan</div>
             <p class="section-note">The remaining work is integration, not invention.</p>
           </div>
 
@@ -725,7 +724,7 @@
             <h2 class="display">Put a ceiling<br />on agent spend.</h2>
             <p>
               Review the vault, run the invariant suite, or bring a design-partner workload
-              to the Gate 5 pilot.
+              to the deployment pilot.
             </p>
           </div>
           <div class="cta-actions reveal">
@@ -785,8 +784,8 @@
         <div>
           <span class="footer-label">Status</span>
           <span class="footer-status"><i aria-hidden="true"></i> Testnet · pre-audit</span>
-          <span>Gates 1–4 complete</span>
-          <span>Gate 5 in progress</span>
+          <span>Stages 1 to 4 complete</span>
+          <span>Deployment in progress</span>
         </div>
       </div>
 

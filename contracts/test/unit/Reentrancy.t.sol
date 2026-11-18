@@ -15,7 +15,7 @@ import {VaultErrors} from "../../src/errors/VaultErrors.sol";
  * @notice Gate-1 requirement: an adversarial merchant that re-enters
  *      `claimVoucher` from a token-receipt hook, replaying the exact voucher it
  *      just settled, must not extract a second payout. Defensive layers under
- *      test: `nonReentrant` outer guard (SECURITY.md reentrancy vector) + the
+ *      test: `nonReentrant` outer guard + the
  *      INV-1 replay wall.
  */
 contract ReentrancyVector is Test {

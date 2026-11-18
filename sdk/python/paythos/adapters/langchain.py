@@ -1,4 +1,4 @@
-"""LangChain (Python) adapter (docs/ARCHITECTURE.md Module 5).
+"""LangChain (Python) adapter.
 
 Builds ``StructuredTool`` instances from a :class:`PaythosClient`. ``langchain_core``
 is imported lazily so the core SDK never hard-depends on it.

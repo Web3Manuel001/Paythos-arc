@@ -3,8 +3,7 @@ pragma solidity 0.8.28;
 
 /**
  * @title SlidingWindow
- * @notice Exact sliding 24-hour spend ceiling (docs/SECURITY.md INV-2 Daily
- *      Ceiling). Hourly buckets + preferred stamp ordering enforce "no more
+ * @notice Exact sliding 24-hour spend ceiling. Hourly buckets + preferred stamp ordering enforce "no more
  *      than `dailyLimit` may settle within ANY 24-hour span" — a fixed-window
  *      limiter would permit limit+limit across two claims one second apart.
  * @dev Pool checked at claim hour h = stamps in [h-24, h]. Any true 24h
@@ -13,7 +12,7 @@ pragma solidity 0.8.28;
  *      Storage: 25 slots referenced stamp%25 — a stamp reappears only after
  *      25 hours, by which time it has left the pool. (24 slots aliased h-24
  *      with h and let a second claim in hour h under-count the still-live
- *      h-24 bucket — reviewer PoC, 2026-11.) 25 SLOAD-equivalent budget per
+ *      h-24 bucket.) 25 SLOAD-equivalent budget per
  *      claim (Arc gas, acceptable; do not reduce slots).
  */
 library SlidingWindow {

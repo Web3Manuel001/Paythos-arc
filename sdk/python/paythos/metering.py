@@ -1,5 +1,5 @@
 """
-Metering-report attestation (docs/PROTOCOL.md §4.2). The server's terminal
+Metering-report attestation. The server's terminal
 stream frame is ``MeteringReport`` JSON carrying a signature over the canonical
 report bytes. The client verifies the signer recovers to the challenge
 ``payTo`` destination — a MITM or lying midpoint cannot inflate the bill
@@ -24,7 +24,7 @@ class MeteringReport:
     scheme: str
     units: str
     #: Client-chosen nonce sent on stream open (X-PAYTHOS-STREAM); the merchant
-    #: must echo it exactly or the report is treated as a replay (reviewer N2).
+    #: must echo it exactly or the report is treated as a replay.
     stream_id: str
     #: Decimal USDC actually consumed, e.g. "0.0034".
     consumed: str
@@ -69,7 +69,7 @@ def attest_stream(account: Account, headers: object, consumed: str) -> StreamAtt
     """Merchant helper: attest a finished stream against the client's nonce.
 
     Reads ``X-PAYTHOS-STREAM`` from the stream-open request headers; a report
-    echoing any other id is rejected by the client as a replay (reviewer N2).
+    echoing any other id is rejected by the client as a replay.
     """
     if isinstance(headers, dict):
         lowered = {str(k).lower(): str(v) for k, v in headers.items()}

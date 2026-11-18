@@ -12,7 +12,7 @@ import {PaythosVault} from "../../src/core/PaythosVault.sol";
  *      read from the environment; a missing/zero treasury aborts before deploy.
  */
 contract DeployVault is Script {
-    /// Arc Testnet native USDC precompile (docs/AGENTS.md chain constants).
+    /// Arc Testnet native USDC precompile.
     address constant ARC_TESTNET_USDC = 0x3600000000000000000000000000000000000000;
     uint256 constant ARC_TESTNET_CHAIN_ID = 5_042_002;
 

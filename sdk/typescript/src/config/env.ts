@@ -2,7 +2,7 @@
  * Zero-dependency `.env` loader (Node ≥ 18 compatible).
  * Loads `sdk/typescript/.env` when present; NEVER overrides variables that are
  * already set in the real environment (explicit export wins, fail-safe order).
- * Secrets hygiene (AGENTS.md rule 5): values parsed here are never logged.
+ * Secrets hygiene: values parsed here are never logged.
  */
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";

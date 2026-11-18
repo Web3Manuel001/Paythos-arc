@@ -1,5 +1,5 @@
 """
-AgentVoucherSigner (docs/ARCHITECTURE.md Module 2.1).
+AgentVoucherSigner.
 EIP-712 cumulative voucher signing, fully in-memory, zero gas, <5ms target.
 The ledger is monotonic per merchant — INV-1 is enforced CLIENT-SIDE here and
 BACKED by the vault contract. Ledger state never farms downward.
@@ -71,7 +71,7 @@ def domain_for(args: SigningDomainArgs) -> dict[str, object]:
     """Build the ``Paythos Protocol`` v2 EIP-712 domain, fail-closed on unverified chains."""
     entry = CHAIN_REGISTRY[args.network]
     if not entry.verified or entry.chain_id is None:
-        # PROTOCOL-OPEN-Q1: fail closed on unverified chains (AGENTS.md rule 3).
+        # PROTOCOL-OPEN-Q1: fail closed on unverified chains.
         raise PaythosError("chain_unverified", f"chain {args.network} not verified in registry")
     if args.chain_id_override is not None and entry.chain_id != args.chain_id_override:
         raise PaythosError(
@@ -103,7 +103,7 @@ class AgentVoucherSigner:
         voucher_ttl_seconds: int = 3600,
         ledger: dict[str, LedgerEntry] | None = None,
     ) -> None:
-        #: Ephemeral key from PAYTHOS_EPHEMERAL_KEY (AGENTS.md secrets hygiene).
+        #: Ephemeral key from PAYTHOS_EPHEMERAL_KEY.
         self._account = Account.from_key(private_key)
         self._ttl = voucher_ttl_seconds
         self._domain = domain_for(domain)
@@ -212,7 +212,7 @@ class AgentVoucherSigner:
         Pin the ledger to an on-chain settlement (post-flush, INV-1): the vault
         compares ``cumulativeAmount`` against ``claimed`` FOREVER — it never
         resets. The old ``reset_merchant`` deleted the entry, restarted the
-        cumulative at 0, and every later claim reverted (reviewer catch).
+        cumulative at 0, and every later claim reverted.
         Only ever RAISES the baseline to what the chain actually recorded.
         """
         if claimed_total < 0:
@@ -261,7 +261,7 @@ def sign_voucher(account: Account, domain: dict[str, object], voucher: Voucher) 
 
 
 def build_voucher_headers(voucher: Voucher, signature: str) -> dict[str, str]:
-    """Wire headers (docs/PROTOCOL.md §1.3) — base64 JSON voucher + hex signature."""
+    """Wire headers — base64 JSON voucher + hex signature."""
     payload = base64.b64encode(
         json.dumps(
             {

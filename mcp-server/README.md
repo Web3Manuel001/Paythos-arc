@@ -1,6 +1,6 @@
 # Paythos MCP server
 
-stdio JSON-RPC 2.0 daemon (docs/ARCHITECTURE.md Module 4.3). Any MCP-capable
+stdio JSON-RPC 2.0 daemon. Any MCP-capable
 host (Claude Desktop, Cursor, Claude Code) mounts the four budgeted tools:
 `get_agent_budget`, `dry_run_errand`, `settle_invoice`, `query_x402_resource`.
 

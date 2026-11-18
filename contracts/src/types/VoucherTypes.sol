@@ -4,10 +4,10 @@ pragma solidity 0.8.28;
 /**
  * @title VoucherTypes
  * @notice Canonical EIP-712 voucher schema. This file is the single source of
- * truth for the wire format defined in docs/PROTOCOL.md §1 — the SDK signer
+ * truth for the wire format: the SDK signer
  * and the vault MUST hash identical typed data or signatures will not verify.
  * @dev Domain constants live in the vault (OZ `EIP712(name:"Paythos Protocol",
- *      version:"2", chainId, verifyingContract)) so the chain and deployment
+ *      version:"3", chainId, verifyingContract)) so the chain and deployment
  *      address are bound at runtime. DO NOT fork this struct without freezing
  *      a new protocol version in `EIP712._name`/`_version`.
  */
@@ -17,7 +17,7 @@ library VoucherTypes {
         address merchant;
         address token;
         uint256 cumulativeAmount; // monotonically increasing session total
-        uint256 validUntil; // hard expiry, unix seconds (SECURITY.md INV-4)
+        uint256 validUntil; // hard expiry, unix seconds
         uint64 epoch; // delegation epoch the voucher was signed under (INV-6)
         bytes32 memo; // 32-byte structured intent/invoice hash
     }
@@ -28,7 +28,7 @@ library VoucherTypes {
     );
 
     /// @notice Protocol version frozen at "3" — v2 lacked the epoch binding and
-    ///      allowed pre-reauthorization vouchers to replay (see SECURITY.md INV-6).
+    ///      allowed pre-reauthorization vouchers to replay.
     string public constant PROTOCOL_VERSION = "3";
 
     function structHash(Voucher memory voucher) internal pure returns (bytes32) {

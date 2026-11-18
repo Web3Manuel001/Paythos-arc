@@ -1,6 +1,5 @@
 """
-Circle Discovery ingestion + Transactability union firewall
-(docs/CIRCLE-INTEGRATION.md §2.1–2.2) — Python parity suite.
+Circle Discovery ingestion + Transactability union firewall: Python parity suite.
 """
 
 from __future__ import annotations

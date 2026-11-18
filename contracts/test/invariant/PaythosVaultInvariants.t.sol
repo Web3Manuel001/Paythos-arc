@@ -12,7 +12,7 @@ import {MockUSDC} from "../mocks/MockUSDC.sol";
  * @title PaythosVaultInvariants
  * @notice Gate-1 requirement: ≥10,000-run invariant fuzz across midnight
  *      rollover, expiry boundaries, reentrancy surfaces, and capital
- *      conservation (docs/ROADMAP.md Gate 1 acceptance; docs/SECURITY.md §1).
+ *      conservation.
  *
  * Run: `FOUNDRY_PROFILE=invariant-fuzz forge test --match-path "test/invariant/*"`
  */

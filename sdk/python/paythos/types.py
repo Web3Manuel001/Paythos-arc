@@ -1,5 +1,5 @@
 """
-Paythos Protocol — canonical Python types (docs/PROTOCOL.md is the source of truth).
+Paythos Protocol — canonical Python types.
 TypeScript mirror: sdk/typescript/src/types.ts — keep both in 1:1 lockstep.
 AGENTS.md: all amounts are atomic micro-USDC (USDC = 6 decimals).
 
@@ -57,7 +57,7 @@ CHAIN_REGISTRY: dict[PaythosNetwork, ChainRegistryEntry] = {
 
 
 class Voucher(BaseModel):
-    """EIP-712 voucher (docs/PROTOCOL.md §1.1). ALWAYS cumulative."""
+    """EIP-712 voucher. ALWAYS cumulative."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -73,7 +73,7 @@ class Voucher(BaseModel):
 
 
 class Policy(BaseModel):
-    """Per-ephemeral-key policy (docs/PROTOCOL.md §2)."""
+    """Per-ephemeral-key policy."""
 
     daily_limit: int
     max_per_tx: int

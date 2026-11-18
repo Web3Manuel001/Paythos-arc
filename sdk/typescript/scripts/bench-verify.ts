@@ -1,6 +1,6 @@
 /**
  * Gate-2 acceptance harness: in-memory voucher verification p99 < 5ms
- * (SECURITY.md INV-M1 — no RPC on the hot path).
+ *.
  *
  * Usage: npx tsx scripts/bench-verify.ts [samples] [--enforce]
  *

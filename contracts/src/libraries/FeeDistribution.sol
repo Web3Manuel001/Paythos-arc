@@ -3,14 +3,14 @@ pragma solidity 0.8.28;
 
 /**
  * @title FeeDistribution
- * @notice Protocol take-rate math (docs/PROTOCOL.md §2.8 fee switch).
+ * @notice Protocol take-rate math.
  * @dev Fee is deducted at source inside `claimVoucher` and routed atomically in
- *      the same transaction (docs/ARCHITECTURE.md Module 1.6). Rounds in the
+ *      the same transaction. Rounds in the
  *      merchant's favor (floor) so the protocol never captures an extra wei.
  */
 library FeeDistribution {
     uint256 public constant BPS_DENOMINATOR = 10_000;
-    uint256 public constant FEE_CAP_BPS = 500; // hard 5% cap (AGENTS.md rule 6)
+    uint256 public constant FEE_CAP_BPS = 500; // hard 5% cap
     uint256 public constant FEE_FLOOR_BPS = 1; // protocol fee switch can never be 0
     uint256 public constant DEFAULT_FEE_BPS = 150; // 1.5%
 

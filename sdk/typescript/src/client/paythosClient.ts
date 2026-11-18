@@ -1,9 +1,10 @@
 /**
- * PaythosClient — x402 v2 auto-negotiation (docs/ARCHITECTURE.md Module 3.2).
+ * PaythosClient — x402 v2 auto-negotiation.
  * Intercepts HTTP 402 challenges, runs the GOFER policy gate, signs a
  * cumulative EIP-712 voucher, retries once with the payment headers.
  * YOPO for `upto` streams: tokens for unrendered output are NEVER signed.
  */
+import type { PaymentRequirements, SettleResponse } from "@x402/core/types";
 import {
   PAYMENT_SIGNATURE_HEADER,
   PaymentChallenge,
@@ -22,9 +23,15 @@ import { PaythosError } from "../core/errors.js";
 import { HoldLedger } from "./holdLedger.js";
 import { MeteringReport, parseMeteringReport, recoverMeteringSigner } from "./metering.js";
 import { isTransactabilityIndex, MerchantObservation } from "./transactability.js";
+import {
+  challengeFromRequirement,
+  createCircleMarketplaceX402,
+  ensureWebCrypto,
+  type CircleMarketplaceConfig,
+} from "./circleMarketplace.js";
 
 export interface TransactabilityOracle {
-  /** Counterparty risk verdict (Module 4.2). Implemented by TransactabilityIndex. */
+  /** Counterparty risk verdict. Implemented by TransactabilityIndex. */
   approve(merchant: string): boolean;
 }
 
@@ -46,7 +53,12 @@ export interface PaythosClientOptions {
   approvalTimeoutMs?: number;
   /** Stream-open fetch deadline. Default 30s; timeout releases the hold. */
   streamOpenTimeoutMs?: number;
-  /** Active hold TTL swept before budget checks. Default 10 minutes. */
+  /**
+   * Per-chunk inactivity deadline. Default 60s; a stalled body releases the
+   * hold and returns instead of hanging forever.
+   */
+  streamIdleTimeoutMs?: number;
+  /** Idle hold TTL swept before budget checks. Default 10 minutes. */
   holdTtlMs?: number;
   /**
    * Tier-2 human gate. Return true ONLY after cryptographic confirmation
@@ -78,7 +90,27 @@ export type ExecutedResult =
   | { ok: true; data: Response; voucher?: Voucher }
   | { ok: false; error: PolicyEvaluatedFailure; status?: number };
 
-/** Result of a YOPO streaming run (INV-M5, docs/PROTOCOL.md §4.2). */
+/** Standard x402 marketplace settlement details (Circle Agent Marketplace). */
+export interface CircleMarketplacePayment {
+  network: string;
+  asset: string;
+  payTo: string;
+  scheme: string;
+  /** True when the chosen rail was Circle Gateway (`GatewayWalletBatched`). */
+  gatewayBatched: boolean;
+}
+
+export type MarketplaceExecutedResult =
+  | {
+      ok: true;
+      data: Response;
+      amountMicro: bigint;
+      payment?: CircleMarketplacePayment;
+      settlement?: SettleResponse;
+    }
+  | { ok: false; error: PolicyEvaluatedFailure; status?: number };
+
+/** Result of a YOPO streaming run (INV-M5). */
 export type StreamedResult =
   | {
       ok: true;
@@ -103,8 +135,8 @@ export interface StreamHooks {
   onChunk?: (delta: string, accumulated: string) => void;
   /**
    * Custom metering extraction. Default: the LAST line of the body is the
-   * metering JSON (optionally wrapped as `{ "metering": {...} }`) —
-   * docs/PROTOCOL.md §4.2 terminal frame.
+   * metering JSON (optionally wrapped as `{ "metering": {...} }`).
+   * This is the stream\'s terminal frame.
    */
   extractMetering?: (response: Response, fullText: string) => MeteringReport | undefined;
 }
@@ -130,9 +162,12 @@ export class PaythosClient {
   readonly #holds = new HoldLedger();
   readonly #approvalTimeoutMs: number;
   readonly #streamOpenTimeoutMs: number;
+  readonly #streamIdleTimeoutMs: number;
   readonly #holdTtlMs: number;
   /** Per-client nonce: identical url+prompt streams in the same ms must not collide. */
   #streamSeq = 0;
+  /** Marketplace spend is direct x402, not vault-settled; track it locally. */
+  #directSpentMicro = 0n;
   #allowanceMicro: bigint;
 
   constructor(
@@ -144,12 +179,18 @@ export class PaythosClient {
     this.#allowanceMicro = options.allowanceMicro ?? DEFAULT_ALLOWANCE_MICRO;
     this.#approvalTimeoutMs = positiveMs(options.approvalTimeoutMs, 120_000, "approvalTimeoutMs");
     this.#streamOpenTimeoutMs = positiveMs(options.streamOpenTimeoutMs, 30_000, "streamOpenTimeoutMs");
+    this.#streamIdleTimeoutMs = positiveMs(options.streamIdleTimeoutMs, 60_000, "streamIdleTimeoutMs");
     this.#holdTtlMs = positiveMs(options.holdTtlMs, 600_000, "holdTtlMs");
   }
 
   /** Active `upto` hold ledger (YOPO ceiling locks, never vouchers). */
   get holds(): HoldLedger {
     return this.#holds;
+  }
+
+  /** Marketplace spend settled outside the vault this session (micro-USDC). */
+  get directSpentMicro(): bigint {
+    return this.#directSpentMicro;
   }
 
   /**
@@ -167,13 +208,13 @@ export class PaythosClient {
     }
   }
 
-  /** dryRun(): structured pre-flight on a challenge, capital untouched (Module 4.1). */
+  /** dryRun(): structured pre-flight on a challenge, capital untouched. */
   dryRun(challenge: PaymentChallenge): PreFlightReport {
     return this.#gofer.preFlight(this.contextFor(challenge));
   }
 
   /**
-   * The x402-aware fetch. Typed failures, never thrown strings (AGENTS.md).
+   * The x402-aware fetch. Typed failures, never thrown strings.
    * (1) plain attempt → (2) 402 → challenge — decode → GOFER gate → tier-2
    * review when signalled → cumulative voucher → retry once.
    */
@@ -241,8 +282,208 @@ export class PaythosClient {
   }
 
   /**
-   * YOPO streaming for `scheme: "upto"` challenges (docs/PROTOCOL.md §4.2,
-   * INV-M5). Lifecycle, in order:
+
+   * Pay a STANDARD x402 v2 service (Circle Agent Marketplace) without the
+   * Paythos voucher envelope. The wire format is `{ x402Version, resource,
+   * accepts[], error, extensions }`, settled by Circle Gateway batching when
+   * offered or exact EIP-3009 otherwise.
+   *
+   * Policy boundary: this path does NOT settle through PaythosVault. GOFER
+   * still gates every signature (allowlist, tiers, human review, rolling
+   * allowance), and direct spend is tracked against the same client budget.
+   * That is deliberately off-chain enforcement; vault custody remains the
+   * rail for Paythos merchants (AGENTS.md non-custodial rule).
+   */
+  async fetchWithCircleMarketplace(
+    attempt: RequestAttempt,
+    config: CircleMarketplaceConfig = {},
+  ): Promise<MarketplaceExecutedResult> {
+    await ensureWebCrypto();
+    const first = await this.rawFetchBuilder(attempt);
+    if (first.status !== 402) {
+      if (first.ok) return { ok: true, data: first, amountMicro: 0n };
+      return {
+        ok: false,
+        error: { code: "network_error", detail: `HTTP ${first.status}` },
+        status: first.status,
+      };
+    }
+
+    const { client, http } = createCircleMarketplaceX402(this.signer, config);
+    let gateFailure: PolicyEvaluatedFailure | undefined;
+    let selected: PaymentRequirements | undefined;
+    let challenge: PaymentChallenge | undefined;
+    let holdId: string | undefined;
+    let amountMicro = 0n;
+    let paid = false;
+
+    client.onBeforePaymentCreation(async ({ paymentRequired, selectedRequirements }) => {
+      selected = selectedRequirements;
+      try {
+        challenge = challengeFromRequirement(paymentRequired, selectedRequirements, attempt.url);
+      } catch (err) {
+        gateFailure = {
+          code: "policy_failure",
+          detail: err instanceof PaythosError ? err.message : String(err),
+        };
+        return { abort: true, reason: gateFailure.detail };
+      }
+
+      const gate = this.gate(challenge, attempt.prompt ?? attempt.url);
+      if (!gate.ok) {
+        gateFailure = gate.error;
+        return { abort: true, reason: gate.error.detail };
+      }
+
+      // Lock the ceiling BEFORE awaiting human review: concurrent marketplace
+      // calls must not both pass the same free-budget check.
+      holdId = HoldLedger.streamIdFor(
+        attempt.url,
+        attempt.prompt ?? attempt.url,
+        Date.now() * 1000 + (this.#streamSeq++ % 1000),
+      );
+      this.#holds.lock(holdId, challenge.payTo, gate.amountMicro);
+      amountMicro = gate.amountMicro;
+
+      if (gate.needsHuman) {
+        let approved: boolean;
+        try {
+          approved = await withDeadline(
+            this.confirmTier2({
+              amountUsd: formatMicroUsd(gate.amountMicro),
+              merchant: challenge.payTo,
+              memo: gate.memo,
+            }),
+            this.#approvalTimeoutMs,
+          );
+        } catch (err) {
+          if (err instanceof DeadlineExceeded) {
+            gateFailure = humanApprovalFailure(`${gate.reason} (approval timed out)`);
+          } else {
+            gateFailure = { code: "policy_failure", detail: String(err) };
+          }
+          return { abort: true, reason: gateFailure.detail };
+        }
+        if (!approved) {
+          gateFailure = humanApprovalFailure(gate.reason);
+          return { abort: true, reason: gateFailure.detail };
+        }
+      }
+      return undefined;
+    });
+
+    try {
+      let paymentRequired;
+      try {
+        paymentRequired = http.getPaymentRequiredResponse((name) => first.headers.get(name));
+      } catch (err) {
+        return {
+          ok: false,
+          error: { code: "policy_failure", detail: `marketplace challenge: ${String(err)}` },
+        };
+      }
+
+      let paymentPayload;
+      try {
+        paymentPayload = await http.createPaymentPayload(paymentRequired);
+      } catch (err) {
+        return {
+          ok: false,
+          error:
+            gateFailure ??
+            {
+              code: "policy_failure",
+              detail: `marketplace payment creation failed: ${String(err)}`,
+            },
+        };
+      }
+
+      const paymentHeaders = http.encodePaymentSignatureHeader(paymentPayload);
+      const headers = new Headers(attempt.headers);
+      for (const [name, value] of Object.entries(paymentHeaders)) headers.set(name, value);
+      const retriedAt = Date.now();
+      const retry = await this.rawFetchBuilder({ ...attempt, headers });
+
+      if (retry.status === 402) {
+        return {
+          ok: false,
+          error: { code: "invalid_voucher", detail: "marketplace rejected payment signature" },
+          status: 402,
+        };
+      }
+      if (!retry.ok) {
+        return {
+          ok: false,
+          error: { code: "network_error", detail: `HTTP ${retry.status}` },
+          status: retry.status,
+        };
+      }
+
+      let settlement: SettleResponse | undefined;
+      try {
+        settlement = http.getPaymentSettleResponse((name) => retry.headers.get(name));
+      } catch {
+        /* Gateway may settle asynchronously; absence is not a failed request */
+      }
+      if (settlement !== undefined && !settlement.success) {
+        // The resource may have been served, but the rail did not settle it.
+        // Fail closed and leave the hold releasable rather than booking spend.
+        return {
+          ok: false,
+          error: {
+            code: "payment_settlement_failed",
+            detail:
+              settlement.errorMessage ??
+              settlement.errorReason ??
+              "marketplace settlement reported failure",
+          },
+          status: retry.status,
+        };
+      }
+
+      if (holdId !== undefined) {
+        try {
+          this.#holds.settle(holdId, amountMicro);
+        } catch {
+          // The local hold may have been idle-swept while the request was in
+          // flight. Circle already accepted the authorization, so count the
+          // spend instead of failing the buyer after delivery.
+        }
+      }
+      this.#directSpentMicro += amountMicro;
+      paid = true;
+      this.#observe(selected?.payTo ?? "", {
+        ok: true,
+        latencyMs: Date.now() - retriedAt,
+        status: retry.status,
+        valid: true,
+      });
+      return {
+        ok: true,
+        data: retry,
+        amountMicro,
+        ...(selected !== undefined
+          ? {
+              payment: {
+                network: selected.network,
+                asset: selected.asset,
+                payTo: selected.payTo,
+                scheme: selected.scheme,
+                gatewayBatched: selected.extra?.name === "GatewayWalletBatched",
+              },
+            }
+          : {}),
+        ...(settlement !== undefined ? { settlement } : {}),
+      };
+    } finally {
+      if (holdId !== undefined && !paid) {
+        this.#holds.release(holdId);
+      }
+    }
+  }
+
+  /**
+   * YOPO streaming for `scheme: "upto"` challenges (INV-M5). Lifecycle, in order:
    *   1. 402 round-trip — challenge declares the OUTCOME CEILING (`max`).
    *   2. GOFER gate against the ceiling, tier-2 human review when signalled.
    *   3. HOLD: the ceiling is LOCKED internally — never a voucher. Holds
@@ -298,7 +539,7 @@ export class PaythosClient {
     // ---- HOLD (internal lock — the ceiling is NEVER signed here) ----
     // Lock BEFORE awaiting human approval: two concurrent streams used to pass
     // the free-budget check, both await approval, then both lock — allowing
-    // active holds to exceed the allowance (reviewer 2026-11). The check and
+    // active holds to exceed the allowance. The check and
     // lock are synchronous, so no interleaving is possible between them.
     const streamId = HoldLedger.streamIdFor(
       attempt.url,
@@ -381,8 +622,36 @@ export class PaythosClient {
       const reader = stream.body.getReader();
       const decoder = new TextDecoder();
       for (;;) {
-        const { done, value } = await reader.read();
+        let chunk: { done: boolean; value?: Uint8Array };
+        try {
+          // A body that stops producing bytes must not hold the caller forever.
+          // Per-chunk deadline, plus touch() so a slow honest stream keeps its
+          // hold while only genuinely idle streams are swept.
+          chunk = await withDeadline(reader.read(), this.#streamIdleTimeoutMs);
+        } catch (err) {
+          if (err instanceof DeadlineExceeded) {
+            await reader.cancel().catch(() => undefined);
+            controller.abort();
+            this.#holds.release(streamId);
+            this.#observe(challenge.payTo, {
+              ok: false,
+              latencyMs: Date.now() - streamStartedAt,
+              valid: false,
+            });
+            return {
+              ok: false,
+              error: {
+                code: "network_error",
+                detail: `stream idle for ${this.#streamIdleTimeoutMs}ms — hold released (YOPO)`,
+              },
+              holdState: "released",
+            };
+          }
+          throw err;
+        }
+        const { done, value } = chunk;
         if (done) break;
+        this.#holds.touch(streamId);
         const delta = decoder.decode(value, { stream: true });
         fullText += delta;
         try {
@@ -443,7 +712,7 @@ export class PaythosClient {
       };
     }
     // Replay binding: a merchant signature over stream A must never settle
-    // stream B (reviewer 2026-11). The id is client-chosen, sent on the stream
+    // stream B. The id is client-chosen, sent on the stream
     // open, and the attestation must echo exactly that id.
     if (report.streamId !== streamId) {
       this.#holds.release(streamId);
@@ -583,9 +852,10 @@ export class PaythosClient {
       amountMicro: parseMaxMicro(challenge),
       // ACTIVE `upto` holds run against the same rolling budget until they
       // settle or release (YOPO ceiling = reserved headroom, not spend).
-      remainingAllowanceMicro: this.#allowanceMicro > this.#holds.activeHoldMicro()
-        ? this.#allowanceMicro - this.#holds.activeHoldMicro()
-        : 0n,
+      remainingAllowanceMicro:
+        this.#allowanceMicro > this.#holds.activeHoldMicro() + this.#directSpentMicro
+          ? this.#allowanceMicro - this.#holds.activeHoldMicro() - this.#directSpentMicro
+          : 0n,
       merchant: challenge.payTo,
       allowlist: this.options.allowlist,
       counterpartyApproved: this.transactabilityApprove(challenge.payTo),
@@ -644,7 +914,7 @@ export class PaythosClient {
   }
 }
 
-/** The x402 `PAYMENT-SIGNATURE` envelope is JSON `{ voucher, signature }` (PROTOCOL.md §3). */
+/** The x402 `PAYMENT-SIGNATURE` envelope is JSON `{ voucher, signature }`. */
 export function serializeVoucher(v: Voucher): Record<string, string | number> {
   return {
     agentKey: v.agentKey,
@@ -700,7 +970,7 @@ function positiveMs(value: number | undefined, fallback: number, name: string): 
 }
 
 /**
- * Unambiguous challenge-amount parsing (reviewer 2026-11).
+ * Unambiguous challenge-amount parsing.
  * `max` is ALWAYS decimal USD per PROTOCOL.md §3.1 — a bare `"10"` is $10.00,
  * never 10 atomic micro. `amount` is the x402 atomic-micro field and is used
  * only when `max` is absent/empty. The two formats never guess from digits.
@@ -732,7 +1002,7 @@ function microFromDecimal(usd: string): bigint {
   return BigInt(w + f6);
 }
 
-/** Decode + validate a base64 x402 PAYMENT-REQUIRED header (docs/PROTOCOL.md §3.1). */
+/** Decode + validate a base64 x402 PAYMENT-REQUIRED header. */
 export function decodeChallenge(res: Response): PaymentChallenge {
   const header = res.headers.get("payment-required");
   if (!header) throw new PaythosError("invalid_challenge", "402 without PAYMENT-REQUIRED header");

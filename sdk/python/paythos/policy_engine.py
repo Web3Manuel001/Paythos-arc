@@ -1,5 +1,5 @@
 """
-GOFER — Governing Financial Objectives Runtime (docs/ARCHITECTURE.md Module 4).
+GOFER — Governing Financial Objectives Runtime.
 The 3-Tier Enterprise Safety Threshold + destination allowlist + verifiable intent.
 Fail closed: EVERY ambiguous input denies.
 """
@@ -16,7 +16,7 @@ from .types import PolicyEvaluatedFailure, PreFlightReport, parse_usd_to_micro
 
 @dataclass(frozen=True)
 class TierThresholds:
-    """Threshold defaults are spec defaults (AGENTS.md); override per deployment."""
+    """Threshold defaults are spec defaults; override per deployment."""
 
     micro_auto_exec_micro: int = parse_usd_to_micro("1")
     human_approval_upper_micro: int = parse_usd_to_micro("10")
@@ -50,7 +50,7 @@ class GoferPolicyEngine:
     def __init__(self, tiers: TierThresholds = DEFAULT_TIERS) -> None:
         self.tiers = tiers
 
-    #: Mastercard-grade Verifiable Intent (Module 4.4):
+    #: Verifiable intent:
     #: keccak256 over ``prompt || timestamp`` — stamped into the voucher ``memo``.
     #: The raw prompt NEVER leaves the local boundary; only its hash does.
     @staticmethod
@@ -106,7 +106,7 @@ class GoferPolicyEngine:
                 ),
             )
         if ctx.amount_micro > self.tiers.micro_auto_exec_micro:
-            # Reviewer catch: BOTH upper bands ($1–$10 AND $10–$25) require a
+            # Both upper bands ($1–$10 AND $10–$25) require a
             # human — the $10–$25 band previously auto-allowed (inverted).
             upper = 3 if ctx.amount_micro > self.tiers.human_approval_upper_micro else 2
             return PolicyDecision(
@@ -121,7 +121,7 @@ class GoferPolicyEngine:
         return PolicyDecision(action="allow", tier=1, reason="within policy")
 
     def pre_flight(self, ctx: PolicyContext) -> PreFlightReport:
-        """Structured dryRun report (Module 4.1) — pure, moves no capital."""
+        """Structured dryRun report — pure, moves no capital."""
         decision = self.evaluate(ctx)
         if decision.action == "deny":
             return PreFlightReport(

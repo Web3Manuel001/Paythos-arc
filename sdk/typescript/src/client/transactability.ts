@@ -1,11 +1,11 @@
 /**
- * Transactability Index (docs/ARCHITECTURE.md Module 4.2, SECURITY.md §3).
+ * Transactability Index.
  * Counterparty health scored from MEASURED service quality: uptime, response
  * validity, latency, 5xx rate. Vendors of pay-then-fail endpoints are
  * downgraded and eventually blocked (INV-M5's companion defense).
  *
  * The registry is pluggable: the MVP ships an in-memory store; signed p2p
- * attestations and a decentralized registry land post-MVP (SECURITY.md §3).
+ * attestations and a decentralized registry land post-MVP.
  * Unknown merchants are ALLOWED by default — absence of evidence is not
  * evidence; the Destination Allowlist is the fail-closed boundary.
  */

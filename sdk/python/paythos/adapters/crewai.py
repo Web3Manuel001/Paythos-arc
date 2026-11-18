@@ -1,4 +1,4 @@
-"""CrewAI adapter (docs/ARCHITECTURE.md Module 5).
+"""CrewAI adapter.
 
 Emits CrewAI-style tools backed by :class:`PaythosClient`. Imported lazily so
 the core SDK never hard-depends on ``crewai``.

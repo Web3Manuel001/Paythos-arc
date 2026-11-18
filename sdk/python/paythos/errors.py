@@ -1,4 +1,4 @@
-"""Typed error routing (AGENTS.md: route errors as typed results, never strings)."""
+"""Typed error routing."""
 
 from __future__ import annotations
 

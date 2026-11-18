@@ -48,6 +48,10 @@ fee 150 bps, replay rejected) plus the INV-6 live proof via `scripts/arc-inv6-li
 re-authorization bumped epoch 1→2, a monotonic-valid stale-epoch voucher REVERTED
 (`SessionEpochMismatch`), and the live-epoch claim settled under clean-slate semantics.
 The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the current build.
+Vault source is **verified on Blockscout**
+(`https://explorer.testnet.arc.io/address/0xD69eA0ab9671549095D473E5176579ee879373Ce#code`);
+the deployed runtime matches commit `b09b4a2` (later commits changed the source, so
+re-verification must compile from that commit, not HEAD).
 
 ## Domain Vocabulary (use consistently)
 
@@ -73,9 +77,9 @@ The 2026-11-07 v2 vault `0x5E7F…0c4C` predates epochs and is no longer the cur
 ## Verification (run before every commit)
 
 ```bash
-cd contracts && forge test                        # 36 tests (unit + invariant fuzz)
-cd sdk/typescript && npx tsc --noEmit && npm test # 141 tests, strict TS
-cd sdk/python && .venv/bin/python -m pytest tests # 116 tests (asyncio_mode=auto)
+cd contracts && forge test                        # 38 tests (unit + invariant fuzz)
+cd sdk/typescript && npx tsc --noEmit && npm test # 156 tests, strict TS
+cd sdk/python && .venv/bin/python -m pytest tests # 121 tests (asyncio_mode=auto)
 cd sdk/typescript && npm run bench:verify -- 2000 --enforce   # release hardware only
 ```
 

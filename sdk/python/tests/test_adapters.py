@@ -1,4 +1,4 @@
-"""Gate-4 Python adapter conformance (docs/ARCHITECTURE.md Module 5).
+"""Gate-4 Python adapter conformance.
 
 Both adapters import their host framework lazily; tests inject a minimal
 duck-typed stand-in so the shapes CrewAI / LangChain consume are verified

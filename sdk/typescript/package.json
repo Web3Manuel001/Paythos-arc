@@ -20,10 +20,16 @@
     "e2e:arc": "tsx scripts/arc-e2e.ts",
     "flushd": "tsx scripts/flushd.ts",
     "bench:verify": "tsx scripts/bench-verify.ts",
-    "e2e:mcp-live": "tsx scripts/arc-mcp-live.ts"
+    "e2e:mcp-live": "tsx scripts/arc-mcp-live.ts",
+    "e2e:circle-live": "tsx scripts/arc-circle-live.ts",
+    "probe:marketplace": "tsx scripts/arc-marketplace-probe.ts"
   },
   "dependencies": {
+    "@circle-fin/x402-batching": "4.0.0",
+    "@x402/core": "2.31.0",
+    "@x402/evm": "2.31.0",
     "ethers": "^6.13.4",
+    "viem": "2.57.19",
     "zod": "^3.23.8"
   },
   "peerDependencies": {
@@ -39,6 +45,7 @@
     }
   },
   "devDependencies": {
+    "@circle-fin/developer-controlled-wallets": "10.5.5",
     "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
     "express": "^5.3.0",

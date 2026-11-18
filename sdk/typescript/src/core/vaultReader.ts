@@ -1,5 +1,5 @@
 /**
- * On-chain vault telemetry (docs/ROADMAP.md Gate 2.5).
+ * On-chain vault telemetry.
  * Read-only access to a deployed PaythosVault: config, policy, allowance and
  * settlement state. All reads go through a pluggable RawCaller so tests run
  * offline; the ethers-backed caller is the production adapter.

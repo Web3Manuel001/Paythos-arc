@@ -5,7 +5,7 @@ pragma solidity 0.8.28;
  * @title VaultErrors
  * @notice Every revert reason in the vault. Custom errors (selector-safe) instead
  *      of strings so gas and debugging stay deterministic. Invariant identifiers
- *      reference docs/SECURITY.md §1.
+ *      reference SECURITY.md.
  */
 library VaultErrors {
     /// Signature does not verify against the vault's EIP-712 domain (INV-1 gate).
@@ -33,10 +33,10 @@ library VaultErrors {
     error ZeroAddress();
     /// Set-at-construction immutables mutated (treasury, token).
     error ImmutableConfigured();
-    /// Fee update pushed `feeBps` above the protocol cap (docs/PROTOCOL.md §2.8).
+    /// Fee update pushed `feeBps` above the protocol cap.
     error FeeCapExceeded(uint256 attempted, uint256 capInBps);
     /// Fee update set `feeBps` below the non-zero floor: the fee switch may
-    ///      never be silently disabled (reviewer 2026-11).
+    ///      never be silently disabled.
     error FeeFloorViolated(uint256 attempted, uint256 floorInBps);
     /// `claimVoucher` reached while the vault has no delegated unsettled float.
     error NothingToClaim();

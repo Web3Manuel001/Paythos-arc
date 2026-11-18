@@ -1,5 +1,5 @@
 /**
- * Hold ledger for `upto` streaming (docs/PROTOCOL.md §4.2).
+ * Hold ledger for `upto` streaming.
  * A hold is an INTERNAL budget authorization — never a voucher. The ceiling
  * is locked when the stream opens and released on failure/break (YOPO,
  * INV-M5); settlement converts exactly the attested consumption into the
@@ -19,6 +19,13 @@ export interface HoldEntry {
   settledMicro: bigint;
   state: HoldState;
   createdAt: number;
+  /**
+   * Last stream activity (chunk arrival). TTL is idle-based: a slow but
+   * progressing stream must not lose its hold. Without
+   * this, a stream longer than `holdTtlMs` was served but its settlement was
+   * refused ("hold already released").
+   */
+  lastActivityAt: number;
   settledAt?: number;
   releasedAt?: number;
 }
@@ -41,16 +48,28 @@ export class HoldLedger {
     if (existing !== undefined) {
       throw new Error(`hold ${streamId.slice(0, 10)}… already ${existing.state}`);
     }
+    const now = Date.now();
     const entry: HoldEntry = {
       streamId,
       merchant: merchant.toLowerCase(),
       ceilingMicro,
       settledMicro: 0n,
       state: "active",
-      createdAt: Date.now(),
+      createdAt: now,
+      lastActivityAt: now,
     };
     this.#holds.set(streamId, entry);
     return entry;
+  }
+
+  /**
+   * Mark stream progress. Called on every chunk so an honest slow stream keeps
+   * its ceiling reserved; only genuinely idle streams are swept.
+   */
+  touch(streamId: string, now: number = Date.now()): void {
+    const entry = this.#require(streamId);
+    if (entry.state !== "active") return; // late chunk after release/settle is inert
+    entry.lastActivityAt = now;
   }
 
   /** YOPO release: stream broke/failed/unattested — nothing owed. */
@@ -79,9 +98,10 @@ export class HoldLedger {
   }
 
   /**
-   * TTL sweep: release ACTIVE holds older than `ttlMs`. Holds are budget
-   * reservations, not vouchers; an abandoned stream must not pin headroom
-   * forever (reviewer 2026-11).
+   * Idle TTL sweep: release ACTIVE holds with no chunk activity for `ttlMs`.
+   * Holds are budget reservations, not vouchers; an abandoned stream must not
+   * pin headroom forever. Progressing streams are refreshed via `touch()`, so
+   * the sweep cannot strand their settlement.
    */
   sweepExpired(ttlMs: number, now: number = Date.now()): HoldEntry[] {
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
@@ -90,7 +110,7 @@ export class HoldLedger {
     const released: HoldEntry[] = [];
     for (const entry of this.#holds.values()) {
       if (entry.state !== "active") continue;
-      if (now - entry.createdAt >= ttlMs) {
+      if (now - entry.lastActivityAt >= ttlMs) {
         entry.state = "released";
         entry.releasedAt = now;
         released.push(entry);

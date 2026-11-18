@@ -1,5 +1,5 @@
 /**
- * Metering-report attestation (docs/PROTOCOL.md §4.2).
+ * Metering-report attestation.
  * The server's terminal stream frame is `MeteringReport` JSON carrying a
  * signature over the canonical report bytes. The client verifies the signer
  * recovers to the challenge `payTo` destination — a MITM or lying midpoint
@@ -15,7 +15,7 @@ export interface MeteringReport {
   /**
    * Client-chosen stream nonce, sent on the stream open (X-PAYTHOS-STREAM).
    * The merchant MUST echo it exactly; a report bound to any other id is a
-   * replay and is rejected (reviewer N2).
+   * replay and is rejected.
    */
   streamId: string;
   /** Decimal USDC actually consumed, e.g. "0.0034". */
@@ -55,7 +55,7 @@ export interface StreamAttestation {
 /**
  * Merchant helper: attest a finished stream against the client's nonce
  * (`X-PAYTHOS-STREAM`). A server that echoes any other id will have its report
- * rejected by the client as a replay (reviewer N2).
+ * rejected by the client as a replay.
  */
 export async function attestStream(
   wallet: { signMessage(message: string): Promise<string> },

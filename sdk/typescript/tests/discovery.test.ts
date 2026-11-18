@@ -1,6 +1,5 @@
 /**
  * Circle Discovery ingestion + Transactability union firewall
- * (docs/CIRCLE-INTEGRATION.md §2.1–2.2).
  */
 import { describe, expect, it, vi } from "vitest";
 import {

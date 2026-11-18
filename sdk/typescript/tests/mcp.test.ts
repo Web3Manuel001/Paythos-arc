@@ -1,5 +1,5 @@
 /**
- * Gate-4 MCP server conformance (docs/ARCHITECTURE.md Module 4.3).
+ * Gate-4 MCP server conformance.
  * Boots the stdio JSON-RPC daemon with ONLY env vars (no config code) and
  * exercises the MCP handshake + all four tools offline.
  */

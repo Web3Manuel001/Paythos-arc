@@ -1,6 +1,5 @@
 """
 Circle Discovery API ingestion + Transactability union firewall
-(docs/CIRCLE-INTEGRATION.md §2.1–2.2).
 
 Circle curates and sanctions-screens the catalog; Paythos re-gates it through
 the Transactability Index. A listing is offered to an agent only when at least

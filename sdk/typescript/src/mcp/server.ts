@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Paythos MCP server (docs/ARCHITECTURE.md Module 4.3) — stdio JSON-RPC 2.0.
+ * Paythos MCP server — stdio JSON-RPC 2.0.
  * Any MCP-capable agent host (Claude Desktop, Cursor, …) mounts budgeted
  * errands through these four tools. Zero network egress beyond the tools.
  *
  * Run: npx tsx src/mcp/server.ts   (or compiled dist/mcp/server.js)
- * Env: PAYTHOS_EPHEMERAL_KEY, PAYTHOS_VAULT_ADDRESS (AGENTS.md secrets rule 5).
+ * Env: PAYTHOS_EPHEMERAL_KEY, PAYTHOS_VAULT_ADDRESS.
  */
 import { createInterface } from "node:readline";
 import { writeFileSync } from "node:fs";
@@ -47,7 +47,7 @@ const TOOLS: McpTool[] = [
   {
     name: "dry_run_errand",
     description:
-      "Pre-execution financial simulation (Module 4.1): evaluate a x402 challenge through GOFER without moving capital. Always run this before settle_invoice.",
+      "Pre-execution financial simulation: evaluate a x402 challenge through GOFER without moving capital. Always run this before settle_invoice.",
     inputSchema: {
       type: "object",
       required: ["challenge"],

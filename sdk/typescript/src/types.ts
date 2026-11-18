@@ -1,5 +1,5 @@
 /**
- * Paythos Protocol — canonical types (docs/PROTOCOL.md is the source of truth).
+ * Paythos Protocol — canonical types.
  * Python mirror: sdk/python/paythos/types.py — keep both in 1:1 lockstep.
  * AGENTS.md: all amounts are atomic micro-USDC (USDC = 6 decimals).
  *
@@ -35,7 +35,7 @@ export const CHAIN_REGISTRY: Readonly<Record<PaythosNetwork, ChainRegistryEntry>
   },
 };
 
-/** EIP-712 voucher (docs/PROTOCOL.md §1.1). ALWAYS cumulative. */
+/** EIP-712 voucher. ALWAYS cumulative. */
 export interface Voucher {
   agentKey: string; // EIP-55 address of the delegated ephemeral key
   merchant: string;
@@ -47,7 +47,7 @@ export interface Voucher {
   memo: string; // bytes32 hex ("0x" + 64 chars)
 }
 
-/** Per-ephemeral-key policy (docs/PROTOCOL.md §2). */
+/** Per-ephemeral-key policy. */
 export interface Policy {
   dailyLimit: bigint;
   maxPerTx: bigint;
@@ -75,7 +75,7 @@ export const PAYMENT_REQUIRED_HEADER = "payment-required";
 export const PAYMENT_SIGNATURE_HEADER = "payment-signature";
 export const X_PAYTHOS_VOUCHER_HEADER = "x-paythos-voucher";
 export const X_PAYTHOS_SIGNATURE_HEADER = "x-paythos-signature";
-/** Stream-completion call marker (docs/PROTOCOL.md §4.2). */
+/** Stream-completion call marker. */
 export const X_PAYTHOS_STREAM_HEADER = "x-paythos-stream";
 
 export type PaymentSchemeResult =
@@ -89,6 +89,7 @@ export interface PolicyEvaluatedFailure {
     | "policy_ambiguous"
     | "policy_failure"
     | "invalid_voucher"
+    | "payment_settlement_failed"
     | "network_error"
     | "unauthorized_merchant"
     | "counterparty_blocked"

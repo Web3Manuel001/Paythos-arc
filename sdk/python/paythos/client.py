@@ -1,5 +1,5 @@
 """
-PaythosClient — x402 v2 auto-negotiation (docs/ARCHITECTURE.md Module 3.2).
+PaythosClient — x402 v2 auto-negotiation.
 Intercepts HTTP 402 challenges, runs the GOFER policy gate, signs a cumulative
 EIP-712 voucher, retries once with the payment headers.
 YOPO for ``upto`` streams: tokens for unrendered output are NEVER signed.
@@ -105,6 +105,7 @@ class PaythosClient:
         allowance_micro: int = DEFAULT_ALLOWANCE_MICRO,
         approval_timeout_seconds: float = 120.0,
         stream_open_timeout_seconds: float = 30.0,
+        stream_idle_timeout_seconds: float = 60.0,
         hold_ttl_seconds: float = 600.0,
         http: httpx.AsyncClient | None = None,
     ) -> None:
@@ -123,17 +124,19 @@ class PaythosClient:
         for name, value in (
             ("approval_timeout_seconds", approval_timeout_seconds),
             ("stream_open_timeout_seconds", stream_open_timeout_seconds),
+            ("stream_idle_timeout_seconds", stream_idle_timeout_seconds),
             ("hold_ttl_seconds", hold_ttl_seconds),
         ):
             if not isinstance(value, (int, float)) or value <= 0:
                 raise ValueError(f"{name} must be > 0 (got {value!r})")
         self._approval_timeout_seconds = float(approval_timeout_seconds)
         self._stream_open_timeout_seconds = float(stream_open_timeout_seconds)
+        self._stream_idle_timeout_seconds = float(stream_idle_timeout_seconds)
         self._hold_ttl_seconds = float(hold_ttl_seconds)
         self._http = http or httpx.AsyncClient(follow_redirects=True)
 
     def dry_run(self, challenge: PaymentChallenge) -> PreFlightReport:
-        """Structured pre-flight on a challenge, capital untouched (Module 4.1)."""
+        """Structured pre-flight on a challenge, capital untouched."""
         return self._gofer.pre_flight(self._context_for(challenge))
 
     def gate(self, challenge: PaymentChallenge, prompt: str) -> GateDecision:
@@ -360,7 +363,7 @@ class PaythosClient:
         # ---- HOLD (internal lock — the ceiling is NEVER signed here) ----
         # Lock BEFORE awaiting human approval: two concurrent streams used to
         # pass the free-budget check, both await, then both lock, exceeding the
-        # allowance (reviewer 2026-11). No await occurs between check and lock.
+        # allowance. No await occurs between check and lock.
         stream_id = stream_id_for(
             attempt.url,
             prompt,
@@ -458,8 +461,42 @@ class PaythosClient:
             )
 
         pieces: list[str] = []
+        iterator = stream.aiter_text().__aiter__()
         try:
-            async for delta in stream.aiter_text():
+            while True:
+                try:
+                    # A stalled body must not hold the caller forever. The idle
+                    # deadline is per-chunk; touch() keeps an honest slow stream's
+                    # hold alive while only genuinely idle holds are swept.
+                    delta = await asyncio.wait_for(
+                        iterator.__anext__(),
+                        timeout=self._stream_idle_timeout_seconds,
+                    )
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError:
+                    await stream.aclose()
+                    self.holds.release(stream_id)
+                    self._observe(
+                        challenge.pay_to,
+                        MerchantObservation(
+                            ok=False,
+                            latency_ms=_elapsed_ms(stream_started_at),
+                            valid=False,
+                        ),
+                    )
+                    return StreamedResult(
+                        ok=False,
+                        error=PolicyEvaluatedFailure(
+                            code="network_error",
+                            detail=(
+                                f"stream idle for {self._stream_idle_timeout_seconds:g}s "
+                                "— hold released (YOPO)"
+                            ),
+                        ),
+                        hold_state="released",
+                    )
+                self.holds.touch(stream_id)
                 pieces.append(delta)
                 cumulative = "".join(pieces)
                 try:
@@ -694,7 +731,7 @@ def parse_max_micro(challenge: PaymentChallenge) -> int:
     """Unambiguous amount parsing: ``max`` is decimal USD, ``amount`` atomic micro.
 
     A bare ``max="10"`` is $10.00 (10_000_000 micro), never 10 atomic micro;
-    the x402 ``amount`` field is the only atomic-micro source (reviewer 2026-11).
+    the x402 ``amount`` field is the only atomic-micro source.
     """
     if isinstance(challenge.max, str) and challenge.max:
         try:

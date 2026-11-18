@@ -1,5 +1,5 @@
 /**
- * Gate-4 adapter conformance (docs/ARCHITECTURE.md Module 5).
+ * Gate-4 adapter conformance.
  * The adapters are duck-typed against their host frameworks (no hard deps);
  * these tests validate the exact shapes LangChain / ElizaOS / AutoGen consume.
  */

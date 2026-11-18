@@ -1,5 +1,5 @@
 /**
- * Token-bucket transport rate limiter (docs/PROTOCOL.md §5 / SECURITY INV-M6).
+ * Token-bucket transport rate limiter.
  * Applied at BOTH the merchant middleware boundary and the SDK outbound loop.
  * A runaway agent loop (e.g. 500 reqs / 2s) throttles locally with HTTP 429
  * semantics BEFORE the allowance burns.

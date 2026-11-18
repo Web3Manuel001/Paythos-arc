@@ -12,7 +12,7 @@ import {MockUSDC} from "../../mocks/MockUSDC.sol";
  * @title PaythosVaultHandler
  * @notice Actor simulation for the Gate-1 invariant fuzz suite. Every action is
  *      a plausible adversarial or patron move; ghost totals let the invariant
- *      checker audit conservation (docs/SECURITY.md INV-2, INV-5).
+ *      checker audit conservation.
  */
 contract PaythosVaultHandler is Test {
     using VoucherTypes for VoucherTypes.Voucher;

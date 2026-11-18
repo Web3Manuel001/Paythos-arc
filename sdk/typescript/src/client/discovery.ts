@@ -1,6 +1,5 @@
 /**
  * Circle Discovery API ingestion + Transactability union firewall
- * (docs/CIRCLE-INTEGRATION.md §2.1–2.2).
  *
  * Circle curates and sanctions-screens the catalog; Paythos re-gates it
  * through the Transactability Index. A listing is offered to an agent only
@@ -109,7 +108,7 @@ export function discoveryQueryString(query: CircleDiscoveryQuery): string {
 
 /**
  * Query the Circle Discovery catalog and apply the Paythos union firewall.
- * Typed result — never throws for transport/format problems (AGENTS.md).
+ * Typed result — never throws for transport/format problems.
  */
 export async function queryCircleMarketplace(
   query: CircleDiscoveryQuery = {},

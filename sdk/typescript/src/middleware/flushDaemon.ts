@@ -1,5 +1,5 @@
 /**
- * Flush daemon (docs/ARCHITECTURE.md Module 3, docs/SECURITY.md INV-M3).
+ * Flush daemon.
  * Consumes FlushPlans from the VoucherAccumulator and settles them on-chain.
  * Receipts are persisted ONLY after chain confirmation (INV-M3: exactly-once
  * pattern); replays of already-settled vouchers are detected and recorded as

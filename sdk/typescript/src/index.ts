@@ -8,8 +8,10 @@ export * from "./core/policyEngine.js";
 export { TokenBucket } from "./core/tokenBucket.js";
 export * from "./core/vaultReader.js";
 export * from "./signer/voucherSigner.js";
+export * from "./signer/circleWalletSigner.js";
 
 export * from "./client/paythosClient.js";
+export * from "./client/circleMarketplace.js";
 export * from "./client/metering.js";
 export * from "./client/holdLedger.js";
 export * from "./client/transactability.js";

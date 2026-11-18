@@ -7,7 +7,7 @@ import {PolicyTypes} from "../types/PolicyTypes.sol";
 /**
  * @title IPaythosVault
  * @notice ABI surface for the TS/Python SDKs and the merchant accumulator.
- *      Mirrors docs/PROTOCOL.md §2 one-to-one.
+ *      Mirrors the vault's external functions one-to-one.
  */
 interface IPaythosVault {
     // ===== Human capital layer (Layer 1 trust) =====

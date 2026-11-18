@@ -1,5 +1,5 @@
 /**
- * Express adapter for the Paythos merchant membrane (Gate 2, Module 3).
+ * Express adapter for the Paythos merchant membrane.
  * Thin: translate req/res into the framework-agnostic VoucherAccumulator.
  * Peer-optional: only works when `express` is installed (package.json peers).
  *
@@ -32,7 +32,7 @@ export interface PaythosMerchantMount extends MerchantVerifierConfig {
 /**
  * True for RFC1918 / loopback / link-local / unspecified / IPv6 ULA addresses.
  * Behind a proxy, `req.ip` stays the proxy unless Express `trust proxy` is set;
- * that would make every agent share one per-IP bucket (reviewer 2026-11).
+ * that would make every agent share one per-IP bucket.
  */
 export function isPrivateOrLoopbackIp(ip: string | undefined): boolean {
   if (typeof ip !== "string" || ip.length === 0) return false;
@@ -58,10 +58,50 @@ export function isPrivateOrLoopbackIp(ip: string | undefined): boolean {
   );
 }
 
+const PROXY_FORWARDING_HEADERS = [
+  "forwarded",
+  "x-forwarded-for",
+  "x-real-ip",
+  "cf-connecting-ip",
+  "true-client-ip",
+] as const;
+
+/** True when a proxy/edge has supplied a client-identity header. */
+export function hasProxyForwardingHeaders(headers: Headers): boolean {
+  return PROXY_FORWARDING_HEADERS.some((name) => {
+    const value = headers.get(name);
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+/**
+ * Explain a per-IP limiter misconfiguration without failing the spend path.
+ *
+ * Two blind spots are covered:
+ *  - a public edge IP (e.g. Cloudflare) is NOT private, yet it is still the
+ *    proxy address unless `trust proxy` is set;
+ *  - forwarded headers (`cf-connecting-ip`, `x-forwarded-for`, …) prove a
+ *    proxy even when `req.ip` looks public.
+ */
+export function proxyTrustWarning(
+  ip: string | undefined,
+  headers: Headers,
+  trustProxy: unknown,
+): string | undefined {
+  if (trustProxy) return undefined;
+  if (hasProxyForwardingHeaders(headers)) {
+    return "[paythos] proxy-forwarded client headers present but Express 'trust proxy' is unset; set app.set('trust proxy', <hops or subnet>) so per-IP limits key on the real client";
+  }
+  if (isPrivateOrLoopbackIp(ip)) {
+    return "[paythos] req.ip is private/loopback; behind a proxy set app.set('trust proxy', <hops or subnet>) so per-IP limits key on the real client";
+  }
+  return undefined;
+}
+
 export function paythosMerchant(config: MerchantVerifierConfig) {
   const accumulator = new VoucherAccumulator(config);
   const challengeFor = config.challengeFor;
-  let warnedPrivateIp = false;
+  let warnedProxyTrust = false;
 
   return (req: Request, res: Response, next: NextFunction): void => {
     const headers = new Headers();
@@ -69,11 +109,21 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
       if (typeof v === "string") headers.set(k, v);
     }
 
+    // Proxy misconfiguration warning (once). Check BEFORE the payment branch so
+    // an unpaid request from behind Cloudflare still surfaces the misconfig.
+    if (!warnedProxyTrust && process.env.NODE_ENV !== "test") {
+      const warning = proxyTrustWarning(req.ip, headers, req.app.get("trust proxy"));
+      if (warning !== undefined) {
+        warnedProxyTrust = true;
+        console.warn(warning);
+      }
+    }
+
     if (!hasPaymentHeaders(headers)) {
       if (!challengeFor) {
         // Fail closed: without a challenge factory there is no way to price
         // the route, so an unpaid request must never reach the handler
-        // (reviewer 2026-11: legacy mounts passed everything through free).
+        // (an earlier version let unpaid requests through).
         res.status(402);
         res.setHeader("accept-payment", "PAYTHOS/x402v2");
         res.json({
@@ -89,7 +139,7 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
         accumulator.assertPayee(challenge);
       } catch (err) {
         // Misconfiguration must never advertise a destination this mount will
-        // not redeem for; fail closed instead of drifting (reviewer 2026-11).
+        // not redeem for; fail closed instead of drifting.
         res.status(500);
         res.json({ error: "merchant_payee_mismatch", detail: String(err) });
         return;
@@ -101,19 +151,6 @@ export function paythosMerchant(config: MerchantVerifierConfig) {
       return;
     }
 
-    // Proxy misconfiguration: a private/loopback req.ip means all clients share
-    // one bucket. Warn once with the fix; do not fail spend paths.
-    if (
-      process.env.NODE_ENV !== "test" &&
-      !warnedPrivateIp &&
-      !req.app.get("trust proxy") &&
-      isPrivateOrLoopbackIp(req.ip)
-    ) {
-      warnedPrivateIp = true;
-      console.warn(
-        "[paythos] req.ip is private/loopback; behind a proxy set app.set('trust proxy', <hops or subnet>) so per-IP limits key on the real client",
-      );
-    }
     const outcome: VerifyOutcome = accumulator.verifyPayment(headers, req.ip);
     if (!outcome.ok) {
       res.status(outcome.status);

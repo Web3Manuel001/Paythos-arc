@@ -1,5 +1,5 @@
 /**
- * AgentVoucherSigner (docs/ARCHITECTURE.md Module 2.1).
+ * AgentVoucherSigner.
  * EIP-712 cumulative voucher signing, fully in-memory, zero gas, <5ms target.
  * The ledger is monotonic per (merchant) — INV-1 is enforced CLIENT-SIDE here
  * and BACKED by the vault contract. Ledger state never farms downward.
@@ -34,9 +34,21 @@ export interface SigningDomainArgs {
   chainIdOverride?: number;
 }
 
-export interface AgentVoucherSignerConfig {
-  /** Ephemeral key from PAYTHOS_EPHEMERAL_KEY (AGENTS.md secrets hygiene). */
-  privateKey: string;
+/**
+ * External EIP-712 signer (e.g. Circle developer-controlled wallet).
+ * The SDK never sees a private key for these signers; the provider must return
+ * a signature that recovers to `address` (or an ERC-1271 smart-account sig).
+ */
+export interface EIP712TypedDataSigner {
+  readonly address: string;
+  signTypedData(
+    domain: TypedDataDomain,
+    types: Record<string, Array<{ name: string; type: string }>>,
+    value: Record<string, unknown>,
+  ): Promise<string>;
+}
+
+interface AgentVoucherSignerCommonConfig {
   domain: SigningDomainArgs;
   /**
    * Delegation epoch to embed in every voucher (INV-6). The agent service
@@ -50,6 +62,20 @@ export interface AgentVoucherSignerConfig {
   voucherTtlSeconds?: number;
 }
 
+export type AgentVoucherSignerConfig = AgentVoucherSignerCommonConfig &
+  (
+    | {
+        /** Ephemeral key from PAYTHOS_EPHEMERAL_KEY (AGENTS.md secrets hygiene). */
+        privateKey: string;
+        externalSigner?: never;
+      }
+    | {
+        /** Circle/HSM/remote EIP-712 signer; private key never enters the SDK. */
+        privateKey?: never;
+        externalSigner: EIP712TypedDataSigner;
+      }
+  );
+
 export type VoucherSigned =
   | { ok: true; voucher: Voucher; signature: string; headers: Record<string, string> }
   | { ok: false; error: { code: "policy_ambiguous"; detail: string } };
@@ -57,14 +83,22 @@ export type VoucherSigned =
 const MEMO_RE = /^0x[0-9a-f]{64}$/i;
 
 export class AgentVoucherSigner {
-  readonly #wallet: Wallet;
+  readonly #address: string;
+  readonly #signTypedData: EIP712TypedDataSigner["signTypedData"];
   readonly #ledger: Map<string, LedgerEntry>;
   readonly #ttl: number;
   #domain: TypedDataDomain;
   #epoch: number;
 
   constructor(cfg: AgentVoucherSignerConfig) {
-    this.#wallet = new Wallet(cfg.privateKey);
+    if (cfg.privateKey !== undefined) {
+      const wallet = new Wallet(cfg.privateKey);
+      this.#address = wallet.address;
+      this.#signTypedData = (domain, types, value) => wallet.signTypedData(domain, types, value);
+    } else {
+      this.#address = getAddress(cfg.externalSigner.address);
+      this.#signTypedData = (domain, types, value) => cfg.externalSigner.signTypedData(domain, types, value);
+    }
     this.#ledger = cfg.ledger ?? new Map();
     this.#ttl = cfg.voucherTtlSeconds ?? 3600;
     this.#epoch = cfg.epoch;
@@ -73,7 +107,25 @@ export class AgentVoucherSigner {
 
   /** Agent address — for budget telemetry (MCP `get_vault_budget`). */
   get agentKey(): string {
-    return getAddress(this.#wallet.address);
+    return getAddress(this.#address);
+  }
+
+  /** Normalized agent address (structurally matches EIP712TypedDataSigner). */
+  get address(): string {
+    return getAddress(this.#address);
+  }
+
+  /**
+   * Sign arbitrary EIP-712 typed data with the same key (e.g. x402 EIP-3009 /
+   * Circle Gateway authorizations). Private keys never leave this class; an
+   * external Circle/HSM signer is used transparently.
+   */
+  signTypedData(
+    domain: TypedDataDomain,
+    types: Record<string, Array<{ name: string; type: string }>>,
+    value: Record<string, unknown>,
+  ): Promise<string> {
+    return this.#signTypedData(domain, types, value);
   }
 
   /** (Re)bind the EIP-712 domain after e.g. a vault redeploy. */
@@ -125,7 +177,7 @@ export class AgentVoucherSigner {
       return { ok: false, error: { code: "policy_ambiguous", detail: "no verified settlement token for the bound chain" } };
     }
     const voucher: Voucher = {
-      agentKey: getAddress(this.#wallet.address),
+      agentKey: getAddress(this.#address),
       merchant: getAddress(merchant),
       token,
       cumulativeAmount: nextTotal,
@@ -134,7 +186,15 @@ export class AgentVoucherSigner {
       memo,
     };
     try {
-      const signature = await signVoucher(this.#wallet, this.#domain, voucher);
+      const signature = await this.#signTypedData(this.#domain, VOUCHER_TYPES, {
+        agentKey: voucher.agentKey,
+        merchant: voucher.merchant,
+        token: voucher.token,
+        cumulativeAmount: voucher.cumulativeAmount,
+        validUntil: voucher.validUntil,
+        epoch: voucher.epoch,
+        memo: voucher.memo,
+      });
       this.#ledger.set(lower, {
         merchant: getAddress(merchant),
         cumulativeAmount: nextTotal,
@@ -150,7 +210,7 @@ export class AgentVoucherSigner {
    * Pin the ledger to an on-chain settlement (post-flush, INV-1): the vault
    * compares `cumulativeAmount` against `claimed` FOREVER — it never resets.
    * The old `resetMerchant()` deleted the entry, restarted cumulative at 0,
-   * and every later claim reverted (reviewer catch). This only ever RAISES
+   * and every later claim reverted. This only ever RAISES
    * the baseline to what the chain has actually recorded as claimed.
    */
   settleMerchant(merchant: string, claimedTotal: bigint): void {
@@ -178,7 +238,7 @@ export class AgentVoucherSigner {
 export function domainFor(args: SigningDomainArgs): TypedDataDomain {
   const registryEntry = CHAIN_REGISTRY[args.network];
   if (!registryEntry.verified || registryEntry.chainId === null) {
-    // PROTOCOL-OPEN-Q1: fail closed on unverified chains (AGENTS.md rule 3).
+    // PROTOCOL-OPEN-Q1: fail closed on unverified chains.
     throw new PaythosError("chain_unverified", `chain ${args.network} not verified in registry`);
   }
   if (args.chainIdOverride !== undefined && registryEntry.chainId !== args.chainIdOverride) {
@@ -194,7 +254,7 @@ export function domainFor(args: SigningDomainArgs): TypedDataDomain {
 
 /** The settlement token binding: Arc native-USDC from the (verified) registry.
  *  Gate 2.5 will add confirmConfig() on-chain reads; the registry is the single
- *  source of truth until then (docs/PROTOCOL.md §7). */
+ *  source of truth until then. */
 function settlementTokenForDomain(domain: TypedDataDomain): string | undefined {
   for (const entry of Object.values(CHAIN_REGISTRY)) {
     if (entry.chainId === domain.chainId && entry.verified) {
@@ -216,7 +276,7 @@ export async function signVoucher(wallet: Wallet, domain: TypedDataDomain, vouch
   });
 }
 
-/** Wire headers (docs/PROTOCOL.md §1.3). */
+/** Wire headers. */
 export function buildVoucherHeaders(voucher: Voucher, signature: string): Record<string, string> {
   const payload = Buffer.from(JSON.stringify(voucherStringMap(voucher)), "utf8").toString("base64");
   return {

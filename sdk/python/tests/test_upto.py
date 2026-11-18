@@ -200,7 +200,9 @@ def test_hold_ledger_sweep_expired_releases_abandoned_holds():
     ledger.lock(fresh, MERCHANT, 5_000)
     now = time.time()
     ledger.get(old).created_at = now - 120
-    ledger.get(fresh).created_at = now - 1
+    ledger.get(old).last_activity_at = now - 120
+    ledger.get(fresh).created_at = now - 120  # creation is irrelevant to idle TTL
+    ledger.get(fresh).last_activity_at = now - 1
     released = ledger.sweep_expired(60, now=now)
     assert [h.stream_id for h in released] == [old]
     assert ledger.get(old).state == "released"
@@ -208,6 +210,20 @@ def test_hold_ledger_sweep_expired_releases_abandoned_holds():
     assert ledger.active_hold_micro() == 5_000
     with pytest.raises(ValueError):
         ledger.sweep_expired(0)
+
+
+def test_hold_ledger_touch_refreshes_idle_ttl():
+    ledger = HoldLedger()
+    sid = stream_id_for("slow", "m", 1)
+    ledger.lock(sid, MERCHANT, 10_000)
+    now = time.time()
+    ledger.get(sid).created_at = now - 120
+    ledger.get(sid).last_activity_at = now - 120
+    ledger.touch(sid, now - 1)  # a chunk lands
+    assert ledger.sweep_expired(60, now=now) == []
+    assert ledger.get(sid).state == "active"
+    assert [h.stream_id for h in ledger.sweep_expired(60, now=now + 60)] == [sid]
+    assert ledger.get(sid).state == "released"
 
 
 def test_hold_ledger_refuses_bad_operations():
@@ -533,6 +549,76 @@ async def test_stream_approval_deadline_releases_hold():
     assert client.holds.active_hold_micro() == 0
     assert signer.ledger_snapshot() == []
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_stalled_body_trips_idle_deadline():
+    state = {"phase": 0}
+
+    async def stalled():
+        yield b"partial "
+        await asyncio.sleep(10)  # peer stops producing bytes but keeps the socket open
+
+    def wrap(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            pytest.fail("completion must never fire after a stalled stream")
+        state["phase"] += 1
+        if state["phase"] == 1:
+            return challenge_response(upto_challenge("0.01"))
+        return httpx.Response(200, content=stalled())
+
+    client, signer, result = await run_stream(wrap, stream_idle_timeout_seconds=0.02)
+    assert result.ok is False
+    assert result.error.code == "network_error"
+    assert "idle" in result.error.detail
+    assert result.hold_state == "released"
+    assert client.holds.active_hold_micro() == 0
+    assert signer.ledger_snapshot() == []
+
+
+@pytest.mark.asyncio
+async def test_stream_slow_honest_survives_idle_sweeps():
+    completions: list[dict] = []
+    state = {"phase": 0}
+
+    async def slow_stream(stream_id: str):
+        line = metered_terminal(MERCHANT_ACCT, "0.002")(stream_id)
+        for piece in ["slow ", "but ", "honest ", "\n" + line + "\n"]:
+            await asyncio.sleep(0.015)
+            yield piece.encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            completions.append(
+                {
+                    "stream_header": request.headers.get("x-paythos-stream"),
+                    "body": request.content.decode(),
+                }
+            )
+            return httpx.Response(200, json={"settled": True})
+        state["phase"] += 1
+        if state["phase"] == 1:
+            return challenge_response(upto_challenge("0.01"))
+        stream_id = request.headers.get("x-paythos-stream", "")
+        return httpx.Response(200, content=slow_stream(stream_id))
+
+    client, signer = make_client(
+        handler,
+        hold_ttl_seconds=0.025,
+        stream_idle_timeout_seconds=1.0,
+    )
+    # Every chunk sweeps the ledger. Without touch(), the hold created >ttl ago
+    # would be released mid-stream and settlement would be refused.
+    result = await client.stream_with_x402(
+        RequestAttempt(url="https://m.example.com/stream", prompt="slow honest"),
+        StreamHooks(on_chunk=lambda _d, _acc: client.holds.sweep_expired(0.025)),
+    )
+    await client.aclose()
+    assert result.ok is True
+    assert result.consumed_micro == 2_000
+    assert client.holds.get(result.stream_id).state == "settled"
+    assert signer.ledger_snapshot()[0].cumulative_amount == 2_000
+    assert len(completions) == 1
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,5 @@
 /**
- * Transactability Index (docs/ARCHITECTURE.md Module 4.2, SECURITY.md §3).
+ * Transactability Index.
  * Measured merchant health: uptime · validity · latency · 5xx rate.
  * Pay-then-fail vendors hit the validity floor and get blocked.
  */

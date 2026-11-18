@@ -1,5 +1,5 @@
 /**
- * ElizaOS plugin adapter (docs/ARCHITECTURE.md Module 5).
+ * ElizaOS plugin adapter.
  * ElizaOS plugins expose `actions` with a `validate` + `handler`, and
  * `providers` returning runtime context. Duck-typed again for portability.
  */

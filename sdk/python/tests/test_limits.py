@@ -1,5 +1,5 @@
 """
-INV-M6 transport throttling parity (docs/PROTOCOL.md §5, Gate-2 acceptance).
+INV-M6 transport throttling parity.
 A 500-request burst must throttle with 429 + Retry-After at the merchant
 boundary — zero backend hits for throttled requests.
 """
@@ -21,6 +21,7 @@ from paythos import (
     VoucherAccumulator,
     paythos_fastapi_middleware,
 )
+from paythos.middleware import _has_proxy_forwarding_headers, _proxy_trust_warning
 from paythos.rate_limit import TokenBucket
 from paythos.signer import build_voucher_headers
 
@@ -76,10 +77,25 @@ def accumulator_for(signer: AgentVoucherSigner) -> VoucherAccumulator:
             merchant_address=TEST_MERCHANT,
             authorized_agents={signer.agent_key.lower(): signer.epoch},
             rate_limit=(CAPACITY, REFILL),
-            # Pre-crypto transport guard (reviewer N1); adapters pass the client IP.
+            # Pre-crypto transport guard; adapters pass the client IP.
             ip_rate_limit=(50, 1.0),
         )
     )
+
+
+def test_proxy_warning_detects_cloudflare_edge_and_public_proxy_ip():
+    headers = {"cf-connecting-ip": "203.0.113.7", "x-forwarded-for": "203.0.113.7"}
+    assert _has_proxy_forwarding_headers(headers)
+    # Public Cloudflare edge IP: not private, but still hides the client.
+    assert "proxy-forwarded" in _proxy_trust_warning("2606:4700::1111", headers)
+    assert "proxy-forwarded" in _proxy_trust_warning("2606:4700::1111", {"x-real-ip": "203.0.113.7"})
+    assert _proxy_trust_warning("2606:4700::1111", {}, trust_proxy=True) is None
+    assert _proxy_trust_warning("2606:4700::1111", {}) is None
+
+
+def test_proxy_warning_still_detects_private_edge_without_forwarded_headers():
+    assert "private/loopback" in _proxy_trust_warning("10.0.0.5", {})
+    assert _has_proxy_forwarding_headers({"x-forwarded-for": "  "}) is False
 
 
 def test_token_bucket_rejects_fail_open_configuration():

@@ -1,12 +1,12 @@
 /**
- * GOFER — Governing Financial Objectives Runtime (docs/ARCHITECTURE.md Module 4).
+ * GOFER — Governing Financial Objectives Runtime.
  * The 3-Tier Enterprise Safety Threshold + destination allowlist + verifiable intent.
  * Fail closed: EVERY ambiguous input denies.
  */
 import { keccak256, toUtf8Bytes } from "ethers";
 import { Policy, PolicyEvaluatedFailure, PreFlightReport, parseUsdToMicro } from "../types.js";
 
-/** Threshold defaults are spec defaults (docs/AGENTS.md); override per deployment. */
+/** Threshold defaults are spec defaults; override per deployment. */
 export interface TierThresholds {
   /** Tier 1 below this clears autonomously. Default $1.00 in micro. */
   microAutoExecMicro: bigint;
@@ -39,7 +39,7 @@ export class GoferPolicyEngine {
   constructor(private readonly tiers: TierThresholds = DEFAULT_TIERS) {}
 
   /**
-   * Mastercard-grade Verifiable Intent (Module 4.4):
+   * Verifiable intent:
    * keccak256 over `prompt || timestamp` — stamped into the voucher `memo`.
    * The raw prompt NEVER leaves the local boundary; only its hash does.
    */
@@ -86,7 +86,7 @@ export class GoferPolicyEngine {
       };
     }
     if (ctx.amountMicro > this.tiers.microAutoExecMicro) {
-      // Reviewer catch: BOTH upper bands ($1–$10 AND $10–$25) require a human.
+      // Both upper bands ($1–$10 AND $10–$25) require a human.
       // The old logic auto-allowed $10–$25 while demanding approval for the
       // SMALLER $1–$10 band — inverted risk (bigger spends, less oversight).
       return {
@@ -101,7 +101,7 @@ export class GoferPolicyEngine {
     return { action: "allow", tier: 1, reason: "within policy — Tier 1 auto-exec band" };
   }
 
-  /** Structured dryRun report (Module 4.1) — pure, moves no capital. */
+  /** Structured dryRun report — pure, moves no capital. */
   preFlight(ctx: PolicyContext): PreFlightReport {
     const decision = this.evaluate(ctx);
     switch (decision.action) {

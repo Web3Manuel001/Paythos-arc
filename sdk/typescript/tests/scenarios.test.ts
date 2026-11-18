@@ -1,5 +1,5 @@
 /**
- * Scripted integration scenarios (docs/ARCHITECTURE.md §3, docs/SECURITY.md §3).
+ * Scripted integration scenarios.
  *
  * - Scenario A — $0.002 `upto` context stream against the REAL merchant-side
  *   VoucherAccumulator: exact-consumption voucher, zero chain writes, no flush.
@@ -75,7 +75,7 @@ async function startServer(
 
 function payable(micro: bigint): PaymentChallenge {
   // x402 atomic amount: explicit `amount`, never a bare integer `max`
-  // (which is decimal USD — reviewer 2026-11 parsing ambiguity).
+  // (which is decimal USD, a parsing ambiguity).
   return { ...challengeJson(MERCHANT, "", "exact"), amount: String(micro) };
 }
 
@@ -89,7 +89,7 @@ function makeSigner(): AgentVoucherSigner {
 
 /* ------------------------------ Scenario A ------------------------------ */
 
-describe("Scenario A — $0.002 upto streaming (ARCHITECTURE.md §3)", () => {
+describe("Scenario A — $0.002 upto streaming", () => {
   it("settles the EXACT consumed voucher, zero chain writes, no flush", async () => {
     const signer = makeSigner();
     const flushes: unknown[] = [];
@@ -178,7 +178,7 @@ describe("Scenario A — $0.002 upto streaming (ARCHITECTURE.md §3)", () => {
 
 /* ------------------------------ Scenario B ------------------------------ */
 
-describe("Scenario B — prompt injection / runaway loop (SECURITY.md §3)", () => {
+describe("Scenario B — prompt injection / runaway loop", () => {
   it("vector 1: SDK intercepts $10,000 to an un-allowlisted attacker — nothing signed, nothing sent", async () => {
     const signer = makeSigner();
     const backend = await startServer((_req, res) => {
@@ -248,7 +248,7 @@ describe("Scenario B — prompt injection / runaway loop (SECURITY.md §3)", () 
 
 /* ------------------------------ Scenario C ------------------------------ */
 
-describe("Scenario C — $7.50 Tier-2 compute job (SECURITY.md §3)", () => {
+describe("Scenario C — $7.50 Tier-2 compute job", () => {
   it("halts, requests cryptographic human approval with the intent memo, then releases", async () => {
     const signer = makeSigner();
     const approvals: { amountUsd: string; merchant: string; memo: string; kind: string }[] = [];

@@ -1,5 +1,5 @@
 /**
- * LangChain.js adapter (docs/ARCHITECTURE.md Module 5).
+ * LangChain.js adapter.
  * Exposes budgeted x402 actions as duck-typed LangChain tools (`DynamicStructuredTool`
  * shape: name/description/schema/func — no direct dependency on @langchain/core).
  * The wallet and the GOFER engine stay owned by the injected PaythosClient.

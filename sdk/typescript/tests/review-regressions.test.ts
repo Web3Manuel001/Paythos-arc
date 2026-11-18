@@ -252,7 +252,7 @@ describe("REV-4 — express membrane gates instead of passing through", () => {
     expect(result.headers["payment-required"]).toBeDefined();
   });
 
-describe("REV-8 — payee binding + epoch-scoped merchant ledger (reviewer 2026-11)", () => {
+describe("REV-8 — payee binding + epoch-scoped merchant ledger", () => {
   it("rejects a voucher made out to a DIFFERENT merchant (never unlocks this payee)", async () => {
     const signer = makeSigner(1);
     const merchant = accumulatorFor(signer, 1);

@@ -7,7 +7,7 @@ import {VoucherTypes} from "../types/VoucherTypes.sol";
  * @title VaultEvents
  * @notice Every state change (including fee routing and revocations) emits here.
  *      Off-chain SDKs index these; the Arc explorer indexes `memoHash` natively
- *      (docs/ARCHITECTURE.md Module 1.5 — structured memo compatibility).
+ *     .
  */
 library VaultEvents {
     using VoucherTypes for VoucherTypes.Voucher;

@@ -1,5 +1,5 @@
 /**
- * YOPO / `upto` streaming suite (docs/PROTOCOL.md §4.2, SECURITY.md INV-M5).
+ * YOPO / `upto` streaming suite.
  * Core property: a voucher exists ONLY for attested, rendered consumption —
  * every failure path releases the hold and signs NOTHING.
  */
@@ -176,13 +176,31 @@ describe("HoldLedger — unit invariants", () => {
     ledger.lock(fresh, MERCHANT, 5_000n);
     const now = Date.now();
     ledger.get(old)!.createdAt = now - 120_000;
-    ledger.get(fresh)!.createdAt = now - 1_000;
+    ledger.get(old)!.lastActivityAt = now - 120_000;
+    ledger.get(fresh)!.createdAt = now - 120_000; // creation is irrelevant to idle TTL
+    ledger.get(fresh)!.lastActivityAt = now - 1_000;
     const released = ledger.sweepExpired(60_000, now);
     expect(released.map((h) => h.streamId)).toEqual([old]);
     expect(ledger.get(old)!.state).toBe("released");
     expect(ledger.get(fresh)!.state).toBe("active");
     expect(ledger.activeHoldMicro()).toBe(5_000n);
     expect(() => ledger.sweepExpired(0)).toThrow(/TTL/);
+  });
+
+  it("touch refreshes idle TTL so a progressing stream keeps its hold", () => {
+    const ledger = new HoldLedger();
+    const sid = HoldLedger.streamIdFor("slow", "m", 1);
+    ledger.lock(sid, MERCHANT, 10_000n);
+    const now = Date.now();
+    ledger.get(sid)!.createdAt = now - 120_000;
+    ledger.get(sid)!.lastActivityAt = now - 120_000;
+    // A chunk lands: the hold is no longer idle even though it was created long ago.
+    ledger.touch(sid, now - 1_000);
+    expect(ledger.sweepExpired(60_000, now)).toHaveLength(0);
+    expect(ledger.get(sid)!.state).toBe("active");
+    // No further activity for the full TTL ⇒ swept.
+    expect(ledger.sweepExpired(60_000, now + 60_000)).toHaveLength(1);
+    expect(ledger.get(sid)!.state).toBe("released");
   });
 
   it("streamIdFor is deterministic and distinct per input", () => {
@@ -386,7 +404,7 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
     expect(failure.holdState).toBe("unset"); // nothing was locked
   });
 
-  it("rejects a stale metering report replayed onto another stream (reviewer N2)", async () => {
+  it("rejects a stale metering report replayed onto another stream", async () => {
     const fix = makeClient();
     enqueueChallenge(fix, uptoChallenge("0.01"));
     enqueueMeteredStream(fix, merchantWallet, "0.001"); // signed for stream A
@@ -448,6 +466,72 @@ describe("streamWithX402 — full YOPO lifecycle", () => {
     expect(failure.holdState).toBe("released");
     expect(fix.client.holds.activeHoldMicro()).toBe(0n);
     expect(fix.signer.ledgerSnapshot()).toHaveLength(0);
+  });
+
+  it("stalled stream body trips the idle deadline, releases the hold, signs nothing", async () => {
+    const fix = makeClient({ streamIdleTimeoutMs: 20 });
+    enqueueChallenge(fix, uptoChallenge("0.01"));
+    const enc = new TextEncoder();
+    fix.queue.push(() => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(enc.encode("partial "));
+          // Never close: simulates a peer that stops producing bytes.
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    const result = await runStream(fix);
+    const failure = clientError(result);
+    expect(failure.error.code).toBe("network_error");
+    expect(failure.error.detail).toMatch(/idle/);
+    expect(failure.holdState).toBe("released");
+    expect(fix.client.holds.activeHoldMicro()).toBe(0n);
+    expect(fix.signer.ledgerSnapshot()).toHaveLength(0);
+    expect(fix.completions).toHaveLength(0);
+  });
+
+  it("slow honest stream survives idle sweeps and settles exact consumption", async () => {
+    const fix = makeClient({ holdTtlMs: 25, streamIdleTimeoutMs: 250 });
+    enqueueChallenge(fix, uptoChallenge("0.01"));
+    const enc = new TextEncoder();
+    fix.queue.push(async (streamId) => {
+      if (streamId === null) throw new Error("stream opened without x-paythos-stream");
+      const report = await signMeteringReport(merchantWallet, {
+        scheme: "upto",
+        units: "USD",
+        streamId,
+        consumed: "0.002",
+      });
+      const pieces = ["slow ", "but ", "honest ", "\n" + JSON.stringify(report) + "\n"];
+      let i = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (i >= pieces.length) {
+            controller.close();
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 15));
+          controller.enqueue(enc.encode(pieces[i++]!));
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    // Each chunk triggers a sweep. Without touch(), the hold would be released
+    // mid-stream (createdAt is older than holdTtlMs by the end).
+    let sweeps = 0;
+    const result = await runStream(fix, {}, {
+      onChunk: () => {
+        sweeps++;
+        fix.client.holds.sweepExpired(25);
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(sweeps).toBe(4);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.consumedMicro).toBe(2_000n);
+    expect(fix.client.holds.get(result.streamId!)!.state).toBe("settled");
+    expect(fix.completions).toHaveLength(1);
   });
 
   it("stream-open deadline releases the hold and signs nothing", async () => {

@@ -1,5 +1,5 @@
 /**
- * AutoGen / OpenAI function-spec adapter (docs/ARCHITECTURE.md Module 5).
+ * AutoGen / OpenAI function-spec adapter.
  * Emits the OpenAI `tools` JSON schema (the format AutoGen + most agent
  * frameworks consume) plus a dispatch table wiring names → SDK methods.
  */

@@ -1,5 +1,5 @@
 /**
- * Merchant membranes (docs/ARCHITECTURE.md Module 2 + 3).
+ * Merchant membranes.
  * Framework-agnostic: emitChallenge / verifyPayment / VoucherAccumulator.
  * In-memory verification only (INV-M1: <5ms, no RPC on the hot path).
  */
@@ -39,9 +39,9 @@ export interface MerchantVerifierConfig {
    */
   authorizedAgents: ReadonlyMap<string, number>;
   /**
-   * x402 challenge factory (PROTOCOL.md §3.1). Requests WITHOUT payment
+   * x402 challenge factory. Requests WITHOUT payment
    * headers get a 402 PAYMENT-REQUIRED challenge instead of a free pass —
-   * the middleware GATES (reviewer catch: it passed everything through).
+   * the middleware gates instead of passing everything through.
    */
   challengeFor?: (ctx: MerchantChallengeContext) => PaymentChallenge;
   /**
@@ -49,7 +49,7 @@ export interface MerchantVerifierConfig {
    * conservative $1.00). Streaming halts at the wall until a flush confirms.
    */
   creditToleranceMicro?: bigint;
-  /** Value flush threshold in micro-USDC ($5.00 default, docs/PROTOCOL.md §6). */
+  /** Value flush threshold in micro-USDC ($5.00 default). */
   flushThresholdMicro?: bigint;
   /** Age-based flush trigger: unsettled > 0 for ≥ N seconds (2h default). */
   flushIntervalSeconds?: number;
@@ -147,7 +147,7 @@ export class VoucherAccumulator {
     this.#maxIpBuckets = maxIpBuckets;
   }
 
-  /** Merchant-side challenge emission (docs/PROTOCOL.md §3.1). */
+  /** Merchant-side challenge emission. */
   emitChallenge(challenge: PaymentChallenge): Record<string, string> {
     if (challenge.x402Version !== 2) {
       throw new TypeError("x402Version ≠ 2 — merchant middleware MUST speak v2");
@@ -159,7 +159,7 @@ export class VoucherAccumulator {
   /**
    * Payee/pricing single source of truth: the emitted challenge MUST settle to
    * `merchantAddress`. Otherwise the voucher this middleware later accepts and
-   * the destination it advertises silently drift apart (reviewer 2026-11).
+   * the destination it advertises silently drift apart.
    */
   assertPayee(challenge: PaymentChallenge): void {
     if (typeof challenge.payTo !== "string" || challenge.payTo.toLowerCase() !== this.#merchant) {
@@ -178,7 +178,7 @@ export class VoucherAccumulator {
    */
   /**
    * Verify an inbound voucher in memory. <5ms budget, no chain call (INV-M1).
-   * Accepts BOTH wire formats (reviewer catch: they were disjoint):
+   * Accepts both wire formats:
    *   - x402 v2 `PAYMENT-SIGNATURE` JSON envelope `{ voucher, signature }`
    *   - native `-paythos-voucher` (base64 JSON) + `-paythos-signature` pair
    * Accumulates strictly-increasing vouchers only. Batches POST /flush plan.
@@ -190,7 +190,7 @@ export class VoucherAccumulator {
     let signature: string | undefined;
 
     if (envelope !== null) {
-      // x402 v2 envelope (PROTOCOL.md §3): JSON `{ voucher, signature }`.
+      // x402 v2 envelope: JSON `{ voucher, signature }`.
       const x402 = decodePaymentSignature(envelope);
       if (!x402) return fail(402, "PAYMENT-SIGNATURE envelope undecodable");
       voucher = x402.voucher;
@@ -253,7 +253,7 @@ export class VoucherAccumulator {
     }
     // Payee binding: this middleware may only redeem vouchers made out to it.
     // Keying the ledger by agent alone let a voucher for merchant B collide
-    // with (and unlock) merchant A's resources (reviewer 2026-11).
+    // with (and unlock) merchant A's resources.
     if (voucher.merchant.toLowerCase() !== this.#merchant) {
       return fail(402, "voucher merchant is not this middleware's payee");
     }
@@ -283,7 +283,7 @@ export class VoucherAccumulator {
     }
     // INV-M6: charge the per-agent bucket only AFTER the signature verifies.
     // Charging earlier let 150 forged vouchers drain a real agent's bucket
-    // and turn its next valid request into a 429 (reviewer 2026-11).
+    // and turn its next valid request into a 429.
     const throttle = this.#limitFor(recovered).tryConsume();
     if (!throttle.allowed) {
       return fail(
@@ -296,7 +296,7 @@ export class VoucherAccumulator {
     // INV-1 on the merchant side, EPOCH-SCOPED: re-authorization resets the
     // on-chain cumulative claim to zero, so a new-epoch voucher may restart at
     // a lower value — carrying the old high-water over would reject valid
-    // sessions and under-count fresh exposure (reviewer 2026-11).
+    // sessions and under-count fresh exposure.
     const current = this.#highest.get(recovered)?.voucher;
     const epochChanged = current !== undefined && current.epoch !== voucher.epoch;
     if (!epochChanged && current && voucher.cumulativeAmount <= current.cumulativeAmount) {
@@ -321,7 +321,7 @@ export class VoucherAccumulator {
     // The 402→200 path also ANCHORS the flush trigger (INV-M2/M3).
     // Evaluated BEFORE the activity stamp resets: byTime must measure the
     // idle window that just elapsed — stamping first made the age trigger
-    // mathematically unreachable (reviewer catch on flush triggers).
+    // mathematically unreachable.
     const flushed = this.maybeFlush(recovered);
     void flushed;
     this.#lastActivityAt.set(recovered, Math.floor(Date.now() / 1000));
@@ -380,7 +380,7 @@ export class VoucherAccumulator {
    *   (time):  unsettled > 0 and age ≥ flushIntervalSeconds (2h default)
    * Effective threshold = min(flushThresholdMicro, credit wall − 1¢): the
    * default $5 flush threshold is ABOVE the default $2 credit wall, which
-   * made flushes unreachable on defaults (reviewer catch) — the flush MUST
+   * made flushes unreachable on defaults, so the flush MUST
    * fire before the wall trips. Never throws.
    */
   maybeFlush(agentKey: string): boolean {

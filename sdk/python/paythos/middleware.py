@@ -1,5 +1,5 @@
 """
-Merchant membranes (docs/ARCHITECTURE.md Module 2 + 3).
+Merchant membranes.
 Framework-agnostic core: ``VoucherAccumulator`` verifies in memory (INV-M1),
 accumulates strictly-increasing vouchers (INV-M2), enforces the credit wall
 (INV-M4) against UNSETTLED exposure and surfaces flush plans.
@@ -51,6 +51,49 @@ def _is_private_or_loopback(host: str | None) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_unspecified
 
 
+_PROXY_FORWARDING_HEADERS = (
+    "forwarded",
+    "x-forwarded-for",
+    "x-real-ip",
+    "cf-connecting-ip",
+    "true-client-ip",
+)
+
+
+def _has_proxy_forwarding_headers(headers: Mapping[str, str]) -> bool:
+    """True when a proxy/edge supplied a client-identity header."""
+    lowered = {str(k).lower(): str(v) for k, v in headers.items()}
+    return any(lowered.get(name, "").strip() for name in _PROXY_FORWARDING_HEADERS)
+
+
+def _proxy_trust_warning(
+    client_id: str | None,
+    headers: Mapping[str, str],
+    trust_proxy: bool = False,
+) -> str | None:
+    """Explain a per-IP limiter misconfiguration without failing the spend path.
+
+    Covers two blind spots: a public edge IP (Cloudflare) is
+    not private yet still hides the client unless proxy headers are trusted, and
+    forwarded headers prove a proxy even when ``request.client.host`` looks public.
+    """
+    if trust_proxy:
+        return None
+    if _has_proxy_forwarding_headers(headers):
+        return (
+            "proxy-forwarded client headers present but proxy headers are not trusted; "
+            "run uvicorn with --proxy-headers --forwarded-allow-ips=<proxy> so per-IP "
+            "limits key on the real client"
+        )
+    if _is_private_or_loopback(client_id):
+        return (
+            "request.client.host is private/loopback; behind a proxy run uvicorn "
+            "with --proxy-headers --forwarded-allow-ips=<proxy> so per-IP limits "
+            "key on the real client"
+        )
+    return None
+
+
 class MerchantChallengeContext(BaseModel):
     """Everything a challenge factory may need to price the resource."""
 
@@ -72,19 +115,19 @@ class MerchantVerifierConfig:
     merchant_address: str
     #: ACTIVE delegation epochs per agentKey (lowercase ⇒ epoch, INV-6).
     authorized_agents: Mapping[str, int]
-    #: x402 challenge factory (PROTOCOL.md §3.1). Requests WITHOUT payment
+    #: x402 challenge factory. Requests WITHOUT payment
     #: headers get a 402 PAYMENT-REQUIRED challenge instead of a free pass.
     challenge_for: Callable[[MerchantChallengeContext], PaymentChallenge] | None = None
     #: Merchant credit-line ceiling in micro-USDC (INV-M4; docs default $2.00).
     credit_tolerance_micro: int = 2_000_000
-    #: Value flush threshold in micro-USDC ($5.00 default, docs/PROTOCOL.md §6).
+    #: Value flush threshold in micro-USDC ($5.00 default).
     flush_threshold_micro: int = 5_000_000
     #: Age-based flush trigger: unsettled > 0 for ≥ N seconds (2h default).
     flush_interval_seconds: int = 7_200
     on_flush_ready: FlushCallback | None = None
     rate_limit: tuple[int, float] = (100, 10.0)
     #: Cheap pre-crypto transport limiter keyed by client IP: a forged-voucher
-    #: flood must not burn CPU or exhaust a real agent's bucket (reviewer 2026-11).
+    #: flood must not burn CPU or exhaust a real agent's bucket.
     ip_rate_limit: tuple[int, float] = (1_000, 100.0)
     #: Hard cap on retained per-IP buckets (oldest-inserted evicted). Default 10k.
     max_ip_buckets: int = 10_000
@@ -155,7 +198,7 @@ class VoucherAccumulator:
             raise ValueError("challenge.pay_to must equal merchant_address (payee drift, fail closed)")
 
     def emit_challenge(self, challenge: PaymentChallenge) -> dict[str, str]:
-        """Merchant-side challenge emission (docs/PROTOCOL.md §3.1)."""
+        """Merchant-side challenge emission."""
         self.assert_payee(challenge)
         payload = challenge.model_dump(by_alias=True, exclude_none=True)
         # camelCase wire keys are protocol-mandated; pydantic aliases map snake→camel.
@@ -274,7 +317,7 @@ class VoucherAccumulator:
                 ok=False, status=402, reason="signature was NOT signed by voucher.agentKey"
             )
         # INV-M6: charge the per-agent bucket only AFTER the signature verifies;
-        # forged vouchers must not drain a real agent's bucket (reviewer 2026-11).
+        # forged vouchers must not drain a real agent's bucket.
         throttle = self._limit_for(recovered).try_consume()
         if not throttle.allowed:
             return VerifyOutcome(
@@ -441,7 +484,7 @@ def _decode_payment_signature(raw: str) -> tuple[Voucher, str] | None:
         return None
 
 
-def paythos_fastapi_middleware(config: MerchantVerifierConfig):
+def paythos_fastapi_middleware(config: MerchantVerifierConfig, *, trust_proxy: bool = False):
     """
     FastAPI/Starlette ASGI middleware factory.
     GATING (REV-4): with ``challenge_for`` configured, a request WITHOUT
@@ -486,11 +529,19 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
             },
         )
 
-    warned_private_ip = [False]
+    warned_proxy_trust = [False]
 
     class PaythosMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
             headers = dict(request.headers)
+            # Check BEFORE the payment branch so an unpaid request from behind
+            # Cloudflare still surfaces the per-IP limiter misconfiguration.
+            client_id = request.client.host if request.client is not None else None
+            if not warned_proxy_trust[0]:
+                warning = _proxy_trust_warning(client_id, headers, trust_proxy=trust_proxy)
+                if warning is not None:
+                    warned_proxy_trust[0] = True
+                    logging.getLogger("paythos.middleware").warning(warning)
             if not _has_payment_headers(headers):
                 if challenge_for is None:
                     # Fail closed: without a challenge factory the route cannot
@@ -504,14 +555,6 @@ def paythos_fastapi_middleware(config: MerchantVerifierConfig):
                         headers={"accept-payment": "PAYTHOS/x402v2"},
                     )
                 return _challenge_response(request)
-            client_id = request.client.host if request.client is not None else None
-            if not warned_private_ip[0] and _is_private_or_loopback(client_id):
-                warned_private_ip[0] = True
-                logging.getLogger("paythos.middleware").warning(
-                    "request.client.host is private/loopback; behind a proxy run uvicorn "
-                    "with --proxy-headers --forwarded-allow-ips=<proxy> so per-IP limits "
-                    "key on the real client"
-                )
             outcome = accumulator.verify_payment(headers, client_id)
             if not outcome.ok:
                 response_headers = {"accept-payment": "PAYTHOS/x402v2"}

@@ -91,7 +91,7 @@ contract VaultTestBase is Test {
             signVoucher(agentPriv, merchant, cumulativeAmount, block.timestamp + 1 hours, keccak256("memo"));
     }
 
-    /// @notice Off-chain digest computation mirroring docs/PROTOCOL.md §1.2.
+    /// @notice Off-chain digest computation mirroring the vault's EIP-712 domain.
     function signDigest(uint256 agentPriv, VoucherTypes.Voucher memory voucher) internal view returns (bytes memory) {
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", vault.DOMAIN_SEPARATOR(), voucher.structHash()));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(agentPriv, digest);

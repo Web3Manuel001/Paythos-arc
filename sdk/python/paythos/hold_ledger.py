@@ -1,5 +1,5 @@
 """
-Hold ledger for ``upto`` streaming (docs/PROTOCOL.md §4.2). A hold is an
+Hold ledger for ``upto`` streaming. A hold is an
 INTERNAL budget authorization — never a voucher. The ceiling is locked when
 the stream opens and released on failure/break (YOPO, INV-M5); settlement
 converts exactly the attested consumption into the signed cumulative voucher.
@@ -26,6 +26,9 @@ class HoldEntry:
     settled_micro: int = 0
     state: HoldState = "active"
     created_at: float = field(default_factory=time.time)
+    #: Last stream activity (chunk arrival). TTL is idle-based so a slow but
+    #: progressing stream keeps its hold.
+    last_activity_at: float = field(default_factory=time.time)
     settled_at: Optional[float] = None
     released_at: Optional[float] = None
 
@@ -55,6 +58,13 @@ class HoldLedger:
         self._holds[stream_id] = entry
         return entry
 
+    def touch(self, stream_id: str, now: float | None = None) -> None:
+        """Mark stream progress so only genuinely idle holds are swept."""
+        entry = self._require(stream_id)
+        if entry.state != "active":
+            return  # late chunk after release/settle is inert
+        entry.last_activity_at = time.time() if now is None else now
+
     def release(self, stream_id: str) -> None:
         entry = self._require(stream_id)
         if entry.state != "active":
@@ -77,10 +87,12 @@ class HoldLedger:
         entry.settled_at = time.time()
 
     def sweep_expired(self, ttl_seconds: float, now: float | None = None) -> list[HoldEntry]:
-        """Release ACTIVE holds older than ``ttl_seconds`` (abandoned streams).
+        """Release ACTIVE holds idle for ``ttl_seconds`` (abandoned streams).
 
         Holds are budget reservations, not vouchers; without a TTL a stream
-        whose client never returns would pin allowance forever (reviewer 2026-11).
+        whose client never returns would pin allowance forever.
+        Progressing streams refresh ``last_activity_at`` via :meth:`touch`, so
+        a long honest stream cannot be swept mid-flight.
         """
         if ttl_seconds <= 0:
             raise ValueError("hold TTL must be > 0")
@@ -89,7 +101,7 @@ class HoldLedger:
         for hold in self._holds.values():
             if hold.state != "active":
                 continue
-            if current - hold.created_at >= ttl_seconds:
+            if current - hold.last_activity_at >= ttl_seconds:
                 hold.state = "released"
                 hold.released_at = current
                 released.append(hold)

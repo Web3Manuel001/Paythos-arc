@@ -8,7 +8,7 @@ import {HookableUSDC, ITransferHook} from "./HookableUSDC.sol";
  * @notice Attack contract: when the vault wires it a settlement, it reenters
  *      `claimVoucher` with the SAME (stale) voucher it just paid out.
  *      Vault defense under test: `nonReentrant` outer guard + INV-1 monotonicity
- *      (SECURITY.md reentrancy vector, Gate 1 acceptance).
+ *     .
  */
 contract ReentrantMerchant is ITransferHook {
     // function selector for `claimVoucher` is built manually to avoid a full ABI dep

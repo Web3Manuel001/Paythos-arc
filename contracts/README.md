@@ -17,7 +17,7 @@ test/invariant/               fuzz invariants (INV-1 … INV-6)
 
 ```bash
 forge build
-forge test            # 36 tests incl. invariant fuzz campaign
+forge test            # 38 tests incl. invariant fuzz campaign
 forge fmt
 ```
 

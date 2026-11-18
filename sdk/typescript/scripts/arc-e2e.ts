@@ -1,11 +1,11 @@
 /**
- * Arc Testnet end-to-end proof (docs/ROADMAP.md Gate 2 acceptance).
+ * Arc Testnet end-to-end proof.
  *
  * Deploys PaythosVault to Arc Testnet, authorizes an ephemeral agent, funds the
  * vault, signs a cumulative EIP-712 voucher OFFLINE with the SDK signer, settles
  * it on-chain via claimVoucher(), and verifies the on-chain invariants + fee split.
  *
- * Fail-closed: exits(2) when required secrets/Funding are absent (AGENTS.md rule 5).
+ * Fail-closed: exits(2) when required secrets/Funding are absent.
  * Secrets are read from the environment only and never logged.
  *
  * Usage:

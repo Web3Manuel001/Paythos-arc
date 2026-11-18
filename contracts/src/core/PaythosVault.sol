@@ -18,17 +18,18 @@ import {FeeDistribution} from "../libraries/FeeDistribution.sol";
 
 /**
  * @title PaythosVault
- * @notice Sovereign USDC custody + bytecode policy enforcement + batch settlement
- *      anchor for the Paythos Protocol (docs/ARCHITECTURE.md Module 1).
+ * @notice Holds an owner's USDC, enforces each agent's spend policy, and settles
+ *      merchant vouchers in batches.
  *
- * Non-negotiable invariants enforced here (docs/SECURITY.md §1):
+ * Invariants enforced here:
  *   INV-1 Monotonic Claim      — cumulative vouchers strictly increase per pair.
  *   INV-2 Daily Ceiling        — rolling 24h window, no cron/oracle needed.
  *   INV-3 Atomic Per-Tx Bound  — delta ≤ policy.maxPerTx always.
  *   INV-4 Temporal Expiry      — vouchers valid only before `expiresAt`.
  *   INV-5 Non-Custodial Reserve— owner-only capital exits; no delegatecall anywhere.
+ *   INV-6 Epoch Binding        — a voucher only settles under the agent's current epoch.
  *
- * Deployment rule (AGENTS.md): the treasury is supplied at construction via the
+ * Deployment rule: the treasury is supplied at construction via the
  * deploy script (`PAYTHOS_TREASURY_ADDRESS`); a zero address reverts, fail closed.
  */
 contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
@@ -47,7 +48,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
         PolicyTypes.Policy policy;
         SlidingWindow.Window window; // exact sliding 24h spend buckets (INV-2)
         bool active;
-        // Clean-slate epoch (docs/fixtures/DelegationLifecycle): each `authorizeAgent`
+        // Clean-slate epoch: each `authorizeAgent`
         // bumps this, orphaning every per-pair cumulative claim from prior windows.
         // We cannot loop-delete maps, so epoch scoping gives a deterministic reset.
         uint64 epoch;
@@ -62,11 +63,11 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     mapping(address agentKey => AgentState state) private _agents;
     /// @notice agentKey => epoch-scoped cumulative amount already settled per merchant (INV-1).
     mapping(address agentKey => mapping(address merchant => PairClaim claim)) private _claims;
-    /// @notice Destination allowlist (Module 4.5). Value = the delegation epoch
+    /// @notice Destination allowlist. Value = the delegation epoch
     ///      in which the owner allowed the merchant; a re-authorization bumps
     ///      the epoch, so stale grants become invalid WITHOUT any sweep. This
     ///      removes the unbounded clear loop (and allow/block churn growth)
-    ///      from `authorizeAgent` (reviewer 2026-11).
+    ///      from `authorizeAgent`.
     mapping(address agentKey => mapping(address merchant => uint64 allowedEpoch)) private _allowedMerchants;
 
     modifier onlyActiveAgent(address agentKey) {
@@ -90,7 +91,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     // Human capital layer (INV-5)
     // ============================================================
 
-    /// @notice Deposit settlement-token reserve. Owner + designated treasurers.
+    /// @notice Deposit settlement-token reserve. Owner only.
     function deposit(uint256 amount) external onlyOwner {
         if (amount == 0) revert VaultErrors.NothingToClaim();
         SETTLEMENT_TOKEN.safeTransferFrom(msg.sender, address(this), amount);
@@ -117,7 +118,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
 
     /// @notice Bind `agentKey` to `policy`. Authorizing an existing key resets
     ///      its rolling window, claims AND destination allowlist — clean-slate
-    ///      semantics, fail closed (docs/fixtures/DelegationLifecycle).
+    ///      semantics, fail closed.
     function authorizeAgent(address agentKey, PolicyTypes.Policy calldata policy) external onlyOwner {
         if (agentKey == address(0)) revert VaultErrors.ZeroAddress();
         if (policy.expiresAt <= block.timestamp) revert VaultErrors.SessionExpired();
@@ -125,7 +126,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
 
         // Allowlist grants are epoch-tagged, so the epoch bump below orphans
         // them with no storage sweep (bounds authorizeAgent gas regardless of
-        // how many merchants were allowed/blocked before — reviewer 2026-11).
+        // how many merchants were allowed/blocked before).
         SlidingWindow.Window memory freshWindow;
         _agents[agentKey] = AgentState({
             policy: policy,
@@ -193,14 +194,14 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
         uint256 previousClaimed = (priorClaim.epoch == agent.epoch) ? priorClaim.cumulativeClaimed : 0;
         if (voucher.cumulativeAmount <= previousClaimed) revert VaultErrors.InvalidVoucherAmount();
 
-        // ---- Destination allowlist (Module 4.5) ----
+        // ---- Destination allowlist ----
         if (_allowedMerchants[voucher.agentKey][voucher.merchant] != agent.epoch) {
             revert VaultErrors.UnauthorizedMerchant();
         }
 
         // ---- EIP-712 signature verification ----
-        // The voucher SEALES over its own memo field; no separate memoHash arg
-        // to desynchronize (memo mismatch security note in docs/PROTOCOL.md §2).
+        // The voucher signs over its own memo field, so there is no separate
+        // memo argument that could fall out of sync with it.
         bytes32 digest = _hashTypedDataV4(voucher.structHash());
         if (!SignatureChecker.isValidSignatureNow(voucher.agentKey, digest, signature)) {
             revert VaultErrors.InvalidSignature();
@@ -218,7 +219,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
             revert VaultErrors.DailyLimitExceeded();
         }
 
-        // ---- Fee routing: deduct at source (docs/ARCHITECTURE.md Module 1.6) ----
+        // ---- Fee routing: deduct at source ----
         (uint256 fee, uint256 net) = FeeDistribution.split(delta, _feeBps);
 
         // ---- Effects before interactions ----
@@ -247,7 +248,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
             revert VaultErrors.FeeCapExceeded(newFeeBps, FeeDistribution.FEE_CAP_BPS);
         }
         // A zero take-rate silently disables fee routing to treasury; keep a
-        // 1 bp floor (reviewer 2026-11).
+        // 1 bp floor.
         if (newFeeBps < FeeDistribution.FEE_FLOOR_BPS) {
             revert VaultErrors.FeeFloorViolated(newFeeBps, FeeDistribution.FEE_FLOOR_BPS);
         }
@@ -259,7 +260,7 @@ contract PaythosVault is IPaythosVault, EIP712, Ownable2Step, ReentrancyGuard {
     // Telemetry (MCP `get_vault_budget`)
     // ============================================================
 
-    /// @notice Exposed for off-chain SDK/test signing symmetry (docs/PROTOCOL.md §1.2).
+    /// @notice Exposed for off-chain SDK/test signing symmetry.
     function DOMAIN_SEPARATOR() external view returns (bytes32) {
         return _domainSeparatorV4();
     }
