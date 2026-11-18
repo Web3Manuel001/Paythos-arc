@@ -30,7 +30,7 @@
     "@x402/evm": "2.31.0",
     "ethers": "^6.13.4",
     "viem": "2.57.19",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@langchain/core": ">=0.2",
