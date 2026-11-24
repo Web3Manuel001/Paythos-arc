@@ -20,8 +20,9 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Contract, JsonRpcProvider, Wallet, getAddress, parseUnits, verifyTypedData } from "ethers";
+import { Contract, Wallet, getAddress, parseUnits, verifyTypedData } from "ethers";
 import { loadDotEnv } from "../src/config/env.js";
+import { arcRpcProvider } from "../src/core/arcRpc.js";
 import { AgentVoucherSigner, VOUCHER_TYPES } from "../src/signer/voucherSigner.js";
 import { claimVoucherArgs } from "../src/middleware/flushDaemon.js";
 import { formatMicroUsd } from "../src/types.js";
@@ -81,7 +82,15 @@ class McpClient {
         const line = this.#buffer.slice(0, newline).trim();
         this.#buffer = this.#buffer.slice(newline + 1);
         if (!line) continue;
-        const parsed = JSON.parse(line) as RpcResponse;
+        let parsed: RpcResponse;
+        try {
+          parsed = JSON.parse(line) as RpcResponse;
+        } catch {
+          // stdout is the JSON-RPC channel; keep the run alive if some dependency
+          // still writes a stray line, but surface it instead of hiding it.
+          process.stderr.write(`[mcp] non-JSON stdout line ignored: ${line.slice(0, 200)}\n`);
+          continue;
+        }
         this.#waiters.get(parsed.id)?.(parsed);
         this.#waiters.delete(parsed.id);
       }
@@ -131,10 +140,11 @@ async function main(): Promise<void> {
   const ephemeralKey = process.env.PAYTHOS_EPHEMERAL_KEY?.trim() || Wallet.createRandom().privateKey;
   const merchant = getAddress(envOrExit("PAYTHOS_MERCHANT_ADDRESS"));
 
-  const provider = new JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true, batchMaxCount: 1 });
-  const network = await provider.getNetwork();
-  if (Number(network.chainId) !== ARC_CHAIN_ID) {
-    throw new Error(`RPC chainId ${network.chainId} is not Arc Testnet ${ARC_CHAIN_ID}`);
+  const provider = arcRpcProvider(rpcUrl, { network: NETWORK });
+  // One real round trip proves the endpoint answers AND reports Arc Testnet.
+  const reportedChainId = Number(BigInt(await provider.send("eth_chainId", [])));
+  if (reportedChainId !== ARC_CHAIN_ID) {
+    throw new Error(`RPC chainId ${reportedChainId} is not Arc Testnet ${ARC_CHAIN_ID}`);
   }
   const owner = new Wallet(deployerKey, provider);
   const vault = new Contract(vaultAddress, paythosVaultAbi, owner);
@@ -299,7 +309,7 @@ async function main(): Promise<void> {
       `${formatMicroUsd(claimed)} USDC | fee ${formatMicroUsd(fee)} net ${formatMicroUsd(net)}`,
     );
     console.log("  merchant payout :", `${formatMicroUsd(net)} USDC received (balance delta verified)`);
-    console.log("\nRESULT: PASS — funded Arc Testnet MCP + SDK + on-chain settlement");
+    console.log("\nRESULT: PASS (funded Arc Testnet MCP + SDK + on-chain settlement)");
   } finally {
     await mcp.stop();
   }

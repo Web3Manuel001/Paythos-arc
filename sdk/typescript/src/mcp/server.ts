@@ -19,10 +19,17 @@ import { PaythosClient, DEFAULT_ALLOWANCE_MICRO } from "../client/paythosClient.
 import { TransactabilityIndex } from "../client/transactability.js";
 import { PaythosError } from "../core/errors.js";
 import { VaultReader, vaultReaderFor } from "../core/vaultReader.js";
-import { JsonRpcProvider, Wallet } from "ethers";
+import { arcRpcProvider } from "../core/arcRpc.js";
+import { Wallet } from "ethers";
 import { loadDotEnv } from "../config/env.js";
 
 loadDotEnv(); // sdk/typescript/.env when present; exported env vars still win
+
+// stdout IS the MCP JSON-RPC channel. Libraries (ethers' network-retry notice in
+// particular) log diagnostics with console.log, which would corrupt a frame and
+// make the host drop the server. Route the whole process's console.log to stderr;
+// every legitimate response below is written with process.stdout.write only.
+console.log = console.error;
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -126,7 +133,12 @@ const RPC_URL = process.env.PAYTHOS_RPC_URL?.trim() || undefined;
 let vaultReader: VaultReader | undefined;
 function reader(): VaultReader {
   if (!RPC_URL) throw new PaythosError("config_missing", "PAYTHOS_RPC_URL is not set");
-  return (vaultReader ??= vaultReaderFor(new JsonRpcProvider(RPC_URL, undefined, { staticNetwork: true }), VAULT_ADDRESS));
+  return (vaultReader ??= vaultReaderFor(
+    // Pinned chain + IPv4-first fetch transport: no startup probe, bounded
+    // timeouts, retries on transient TCP failures (see core/arcRpc.ts).
+    arcRpcProvider(RPC_URL, { network: NETWORK }),
+    VAULT_ADDRESS,
+  ));
 }
 
 /**

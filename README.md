@@ -13,7 +13,7 @@ Where Circle's Agent Stack (agents.circle.com) provides the rails (the marketpla
 | Stage | Scope | State |
 | --- | --- | --- |
 | 1 | `PaythosVault.sol` + invariant fuzz suite | complete: 38 Foundry tests green |
-| 2 | Voucher channel, merchant middleware, throttling, verify benchmark | complete: TS 156 · Python 121 |
+| 2 | Voucher channel, merchant middleware, throttling, verify benchmark | complete: TS 159 · Python 121 |
 | 3 | GOFER policy engine (spend authorization), dryRun, 3-tier approval, verifiable intent, metered `upto` streaming (YOPO), Transactability Index, Circle Discovery firewall, Circle marketplace x402 v2 buyer | complete |
 | 4 | LangChain / ElizaOS / AutoGen adapters, stdio MCP server, one-block install | complete |
 | 5 | Arc deployment + Circle CCTP funding + SDK release + grant package | in progress: Arc Testnet vault deployed and source-verified; mainnet, CCTP, SDK release, grant pending |
@@ -66,7 +66,7 @@ docs/                 Internal protocol spec (not distributed)
 
 ```bash
 cd contracts && forge test                    # 38 tests
-cd sdk/typescript && npm ci && npm test       # 156 tests
+cd sdk/typescript && npm ci && npm test       # 159 tests
 cd sdk/python && uv venv && uv pip install -e ".[dev]" && pytest   # 121 tests
 ```
 
