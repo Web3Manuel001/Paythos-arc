@@ -9,6 +9,8 @@
  *    whole provider dies with `AggregateError [ETIMEDOUT]` before the first
  *    RPC call. Pinning the Arc network at construction (`staticNetwork`) skips
  *    the probe entirely and `<network>.getNetwork()` stays a pure cache read.
+ *    Separately, Node's default 250 ms per-address connect budget cancels
+ *    healthy Cloudflare sockets (see CONNECT_ATTEMPT_TIMEOUT_MS below).
  * 2. Ethers does not retry ordinary provider calls, so one transient TCP
  *    timeout aborts a funded run halfway through. The `fetch` (undici)
  *    transport below carries a bounded per-attempt timeout plus a short retry
@@ -22,6 +24,7 @@
  * PROTOCOL-OPEN-Q1) refuses to build a provider.
  */
 import { setDefaultResultOrder } from "node:dns";
+import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import {
   FetchRequest,
   JsonRpcProvider,
@@ -34,6 +37,17 @@ const DEFAULT_NETWORK: PaythosNetwork = "eip155:5042002";
 const DEFAULT_TIMEOUT_MS = 20_000;
 const DEFAULT_ATTEMPTS = 3;
 const RETRY_BASE_MS = 400;
+
+/**
+ * Node 20+ connects to every resolved address in parallel and gives each one
+ * `autoSelectFamilyAttemptTimeout` before moving on; the default is 250 ms.
+ * Arc's RPC sits behind Cloudflare and our IPv4 connects regularly take 300 ms
+ * to 4 s, so the default cancelled healthy sockets and surfaced as
+ * `AggregateError [ETIMEDOUT]` while `curl` to the same addresses succeeded in
+ * 200-500 ms. Two seconds keeps real connects alive and still falls through a
+ * dead IPv6 route.
+ */
+const CONNECT_ATTEMPT_TIMEOUT_MS = 2_000;
 
 /** Socket/fetch failures worth another attempt; everything else is final. */
 const RETRYABLE_CODES = new Set([
@@ -74,6 +88,12 @@ export function installArcRpcTransport(options: ArcRpcOptions = {}): void {
     setDefaultResultOrder("ipv4first");
   } catch {
     // Node < 17 has no dual-stack ordering knob; the retry ladder still applies.
+  }
+  // Give each address a realistic budget instead of Node 24's 250 ms default.
+  try {
+    setDefaultAutoSelectFamilyAttemptTimeout(CONNECT_ATTEMPT_TIMEOUT_MS);
+  } catch {
+    // Older Node lacks the knob; per-request timeouts and retries still apply.
   }
   if (installed) return;
   installed = true;

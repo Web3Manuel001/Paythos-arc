@@ -3,6 +3,7 @@
  * Offline: no request is issued, the network is pinned at construction.
  */
 import { describe, expect, it } from "vitest";
+import { getDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { arcRpcProvider, installArcRpcTransport } from "../src/core/arcRpc.js";
 
 const RPC = "https://rpc.testnet.arc.io";
@@ -22,10 +23,12 @@ describe("arcRpcProvider", () => {
     );
   });
 
-  it("installs the fetch transport idempotently", () => {
+  it("installs the fetch transport idempotently and widens the connect budget", () => {
     expect(() => {
       installArcRpcTransport({ attempts: 2 });
       installArcRpcTransport({ attempts: 9 });
     }).not.toThrow();
+    // Node 24's 250 ms default cancelled healthy Arc RPC sockets.
+    expect(getDefaultAutoSelectFamilyAttemptTimeout()).toBeGreaterThanOrEqual(2_000);
   });
 });

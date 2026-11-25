@@ -21,6 +21,7 @@
     "flushd": "tsx scripts/flushd.ts",
     "bench:verify": "tsx scripts/bench-verify.ts",
     "e2e:mcp-live": "tsx scripts/arc-mcp-live.ts",
+    "vault:fund": "tsx scripts/arc-fund-vault.ts",
     "e2e:circle-live": "tsx scripts/arc-circle-live.ts",
     "probe:marketplace": "tsx scripts/arc-marketplace-probe.ts"
   },

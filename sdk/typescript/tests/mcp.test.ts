@@ -71,7 +71,9 @@ class McpClient {
 
   request(id: number, method: string, params?: Record<string, unknown>): Promise<RpcResponse> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}`)), 10_000);
+      // A cold `tsx` boot of the server takes ~5s; under the parallel test pool
+      // (the INV-M6 burst suites saturate the CPU) it can pass 10s and flake.
+      const timer = setTimeout(() => reject(new Error(`timeout waiting for ${method}`)), 30_000);
       this.#waiters.set(id, (res) => {
         clearTimeout(timer);
         resolve(res);
