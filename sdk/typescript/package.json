@@ -52,7 +52,7 @@
     "express": "^5.3.0",
     "tsx": "^4.23.15",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.9"
+    "vitest": "^5.1.0"
   },
   "bin": {
     "paythos-mcp": "dist/mcp/server.js"
